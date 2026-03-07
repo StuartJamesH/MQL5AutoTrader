@@ -1,40 +1,110 @@
+"""
+DataHandler module.
+
+Provides data structures and market-data feeds for both backtesting and live
+trading via a local MetaTrader 5 terminal.
+
+Classes
+-------
+Order
+    Lightweight dataclass representing a single trade order.
+DataHandler
+    CSV-backed handler used for backtesting.
+MT5DataHandler
+    MT5-backed handler supporting historical *replay* and real-time *live*
+    bar delivery.
+"""
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Optional
+
 import pandas as pd
 import plotly.graph_objects as go
-from dataclasses import dataclass
-import time
-from datetime import datetime, timedelta
 
 try:
     import MetaTrader5 as mt5
-except Exception:
+except Exception:  # pragma: no cover – package absent in non-MT5 environments
     mt5 = None
+
+_LOG = logging.getLogger(__name__)
 
 @dataclass
 class Order:
+    """Represents a single trade order.
+
+    Attributes
+    ----------
+    symbol : str
+        Instrument ticker (e.g. ``'EURUSD'``).
+    side : str
+        Direction – ``'buy'`` or ``'sell'``.
+    entry : float
+        Requested entry price (``0.0`` for market orders).
+    qty : int
+        Order volume in lots.
+    entry_time : str
+        ISO-8601 timestamp at which the order was created or filled.
+    expiration : datetime or None
+        UTC datetime at which the pending order expires; ``None`` means
+        Good-Till-Cancelled.
+    sl : float
+        Stop-loss price (``0.0`` disables stop-loss).
+    tp : float
+        Take-profit price (``0.0`` disables take-profit).
+    """
+
     symbol: str
-    side: str   # 'buy' or 'sell'
+    side: str           # 'buy' | 'sell'
     entry: float
     qty: int
     entry_time: str
-    expiration: int
+    expiration: Optional[datetime]  # UTC datetime; None means GTC
     sl: float
     tp: float
 
 class DataHandler:
+    """CSV-backed data handler, primarily used for backtesting.
+
+    Wraps a pandas DataFrame of OHLC bars and exposes a ``get_next_bar()``
+    generator that yields rows as ``itertuples()`` namedtuples, making it
+    interchangeable with :class:`MT5DataHandler` inside
+    :class:`~Engine.Live_Engine`.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        OHLC DataFrame.  A ``'Date'`` column is renamed to ``'Time'``
+        automatically if present.
     """
-    Used mainly for backtesting
-    """
-    def __init__(self, df):
-        self.data = df.rename(columns={'Date': 'Time'}, errors='ignore')
-        self.long_position = False
-        self.short_position = False
+
+    def __init__(self, df: pd.DataFrame) -> None:
+        self.data: pd.DataFrame = df.rename(columns={'Date': 'Time'}, errors='ignore')
+        self.long_position: bool = False
+        self.short_position: bool = False
 
     def get_next_bar(self):
+        """Yield OHLC bars one at a time as ``itertuples`` namedtuples."""
         for row in self.data.itertuples():
             yield row
 
-    # Aggregate data to create a daily resolution chart
-    def to_daily(self, inplace=False):
+    def to_daily(self, inplace: bool = False) -> Optional[pd.DataFrame]:
+        """Resample intraday data to daily OHLC bars.
+
+        Parameters
+        ----------
+        inplace : bool, optional
+            If ``True``, replace ``self.data`` with the daily DataFrame and
+            return ``None``.  If ``False`` (default), return the daily
+            DataFrame without modifying ``self.data``.
+
+        Returns
+        -------
+        pd.DataFrame or None
+        """
         daily = self.data.copy()
         grouped = daily.groupby(daily['Time'].dt.date)
         result = pd.DataFrame({
@@ -49,8 +119,14 @@ class DataHandler:
             return None
         return result
 
-    # Plot OHLC data using plotly
-    def plot_ohlc(self, title="OHLC Chart"):
+    def plot_ohlc(self, title: str = "OHLC Chart") -> None:
+        """Render an interactive candlestick chart using Plotly.
+
+        Parameters
+        ----------
+        title : str, optional
+            Chart title shown at the top of the figure.
+        """
         data = self.data
         fig = go.Figure(data=[go.Candlestick(
             x=data['Time'],
@@ -59,35 +135,60 @@ class DataHandler:
             low=data['Low'],
             close=data['Close']
         )])
-        
+
         fig.update_layout(
             title=title,
             xaxis_title='Time',
             yaxis_title='Price',
-            xaxis_type='category',  # Treat x-axis as categorical to remove gaps
-            xaxis=dict(showticklabels=False, rangeslider=dict(visible=False))  # Remove x-axis labels and slider
+            xaxis_type='category',  # categorical axis removes weekend/holiday gaps
+            xaxis=dict(showticklabels=False, rangeslider=dict(visible=False))
         )
-        
+
         fig.show()
 
 
 
 
 class MT5DataHandler:
-    """
-    Simple MT5-backed DataHandler providing a get_next_bar() generator so it
-    can be used interchangeably with the CSV `DataHandler` already in this
-    project.
+    """MT5-backed data handler providing a ``get_next_bar()`` generator.
 
-    Usage (replay mode):
-        dh = MT5DataHandler(symbol='EURUSD', timeframe='M1', mode='replay', start='2025-10-01', end='2025-10-05')
-        for bar in dh.get_next_bar():
-            ...
+    Drop-in replacement for :class:`DataHandler` when connected to a live
+    MetaTrader 5 terminal.  Two operating modes are supported:
 
-    Live mode is a simple poller that yields a synthetic 1-tick 'bar' with
-    Close equal to the latest tick price. This is intentionally minimal —
-    for production you'd want a separate tick pipeline and proper bar
-    aggregation.
+    * **replay** – fetches a historical date range from MT5 on construction
+      and replays the bars in order (useful for walk-forward testing with a
+      live connection).
+    * **live** – polls MT5 continuously and yields each *completed* bar at
+      bar-close time.  7 000 bars are fetched on every poll cycle to give
+      multi-timeframe strategies sufficient look-back for indicator warm-up.
+
+    Parameters
+    ----------
+    symbol : str
+        MT5 instrument ticker, e.g. ``'EURUSD'``.
+    timeframe : str
+        Timeframe string (``'M1'``, ``'M5'``, ``'M15'``, ``'H1'``, ``'D1'``,
+        or equivalently ``'1min'``, ``'5min'``, etc.).  A raw MT5 timeframe
+        integer constant may also be passed as a string.
+    mode : str
+        ``'replay'`` or ``'live'``.
+    start : str, optional
+        Start date/time for replay mode (ISO-8601 or any format accepted by
+        ``pd.to_datetime``).  Required when *mode* is ``'replay'``.
+    end : str, optional
+        End date/time for replay mode.  Defaults to the current time when
+        omitted.
+    max_bars : int, optional
+        Maximum bars to fetch when falling back from ``copy_rates_range`` to
+        ``copy_rates_from`` in replay mode.  Defaults to ``7 000``.
+
+    Raises
+    ------
+    RuntimeError
+        If the ``MetaTrader5`` package is unavailable or ``mt5.initialize()``
+        fails.
+    ValueError
+        If an unrecognised *timeframe* string is supplied.
     """
 
     TF_MAP = {
@@ -103,7 +204,7 @@ class MT5DataHandler:
         'D1': lambda: mt5.TIMEFRAME_D1 if mt5 is not None else None,
     }
 
-    def __init__(self, symbol: str = 'EURUSD', timeframe: str = '1min', mode: str = 'replay', start: str = None, end: str = None, max_bars: int = None):
+    def __init__(self, symbol: str = 'EURUSD', timeframe: str = '1min', mode: str = 'replay', start: Optional[str] = None, end: Optional[str] = None, max_bars: Optional[int] = None) -> None:
         self.symbol = symbol
         self.timeframe = timeframe
         self.mode = mode
@@ -138,10 +239,12 @@ class MT5DataHandler:
         if self.mode == 'replay':
             self._load_historical()
 
-    def _load_historical(self):
-        # Fetch bar history from MT5 between start and end. If end is None
-        # we fetch up to now. We use copy_rates_range when both start and end
-        # are provided, or copy_rates_from otherwise.
+    def _load_historical(self) -> None:
+        """Fetch historical bars from MT5 and store them in ``self.data``.
+
+        Uses ``copy_rates_range`` when both *start* and *end* are set, falling
+        back to ``copy_rates_from`` if the range query returns no data.
+        """
         if self.start is None:
             raise ValueError('start must be provided for replay mode')
 
@@ -174,7 +277,12 @@ class MT5DataHandler:
         self.data = df
 
     def get_next_bar(self):
-        """Yield bars in the same format as the CSV DataHandler (itertuples())."""
+        """Yield OHLC bars in the same namedtuple format as :class:`DataHandler`.
+
+        In *replay* mode the generator is exhausted once all historical bars
+        have been yielded.  In *live* mode the generator runs indefinitely,
+        blocking between poll cycles.
+        """
         if self.mode == 'replay':
             if self.data is None:
                 self._load_historical()
@@ -241,17 +349,18 @@ class MT5DataHandler:
                         if abs(hours_diff) > 0:
                             tz_offset_seconds = hours_diff * 3600
                             self.tz_offset_seconds = tz_offset_seconds
-                            print(f"[MT5DataHandler] Detected timezone offset: {hours_diff} hours ({tz_offset_seconds} seconds)")
+                            _LOG.info(
+                                "Detected timezone offset: %d hours (%d seconds)",
+                                hours_diff,
+                                tz_offset_seconds,
+                            )
                     except Exception:
                         pass
                     tz_offset_computed = True
 
                 # rates is an array-like of bars; iterate in chronological order (oldest first)
-                try:
-                    # copy_rates_from_pos returns oldest-first, so we process in order
-                    sorted_rates = list(rates)
-                except Exception:
-                    sorted_rates = list(rates)
+                # copy_rates_from_pos returns oldest-first; process chronologically
+                sorted_rates = list(rates)
 
                 for rate in sorted_rates:
                     # MT5 returns bar times as epoch seconds. Apply computed timezone offset
@@ -282,7 +391,8 @@ class MT5DataHandler:
         else:
             raise ValueError(f'Unknown mode: {self.mode}')
 
-    def shutdown(self):
+    def shutdown(self) -> None:
+        """Cleanly shut down the connection to the MT5 terminal."""
         try:
             mt5.shutdown()
         except Exception:

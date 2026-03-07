@@ -1,7 +1,8 @@
 from DataHandler import Order
 from Learn.labels import get_market_regime
 from collections import deque
-import MetaTrader5 as mt5
+from datetime import timedelta
+from typing import Optional, TYPE_CHECKING
 import datetime
 import torch
 import pandas as pd
@@ -9,8 +10,11 @@ import talib
 import os
 import csv
 
+if TYPE_CHECKING:
+    from TicketBook import TicketBook
+
 class TripleBarrier:
-    def __init__(self, symbol, model, model_pack, patience, risk=50, ema1_period=8, ema2_period=30, mt5_executor=None, data_handler=None, maxpos=0.5, debug=True):
+    def __init__(self, symbol, model, model_pack, patience, risk=50, ema1_period=8, ema2_period=30, mt5_executor=None, data_handler=None, maxpos=0.5, debug=True, ticket_book: Optional["TicketBook"] = None):
         self.symbol = symbol
         self.order_type = 'market'
 
@@ -63,6 +67,8 @@ class TripleBarrier:
         self.fills = []
         # Last known signal value (helps detect transitions)
         self.last_signal = 0
+        # TicketBook for state queries (pending / open position checks)
+        self.ticket_book = ticket_book
 
     def get_moving_averages(self):
         """
@@ -75,28 +81,24 @@ class TripleBarrier:
             return ema1, ema2
         else:
             return None, None
-    
-    def check_pending_orders(self):
+
+    def check_pending_orders(self) -> bool:
         """
-        Check to see if any orders are pending
+        Return True if there is an active pending order for this symbol.
+        State is read from the TicketBook; no MT5 call is made.
         """
-        orders = mt5.orders_get()
-        if len(orders) > 0:
-            return True
-        else:
-            return False
-    
-    def check_open_positions(self):
+        if self.ticket_book is not None:
+            return self.ticket_book.has_pending_order(self.symbol)
+        return False
+
+    def check_open_positions(self) -> bool:
         """
-        Check to see if any positions have been opened
+        Return True if there is an open (filled) position for this symbol.
+        State is read from the TicketBook; no MT5 call is made.
         """
-        positions = mt5.positions_get()
-        if positions is None:
-            return False
-        elif len(positions) == 0:
-            return False
-        else:
-            return True
+        if self.ticket_book is not None:
+            return self.ticket_book.has_open_position(self.symbol)
+        return False
     
     def make_prediction(self):
         """
@@ -243,7 +245,7 @@ class TripleBarrierHiLow:
     """
     Uses similar logic as TripleBarrier, but uses limit orders to time entries and reduce trades that go bad fast.
     """
-    def __init__(self, symbol, model, model_pack, patience, risk=50, ema1_period=8, ema2_period=30, mt5_executor=None, data_handler=None, maxpos=0.5, debug=True, log=True):
+    def __init__(self, symbol, model, model_pack, patience, risk=50, ema1_period=8, ema2_period=30, mt5_executor=None, data_handler=None, maxpos=0.5, debug=True, log=True, ticket_book: Optional["TicketBook"] = None):
         self.symbol = symbol
         self.order_type = 'stop'
 
@@ -376,28 +378,24 @@ class TripleBarrierHiLow:
             return ema1, ema2
         else:
             return None, None
-    
-    def check_pending_orders(self):
+
+    def check_pending_orders(self) -> bool:
         """
-        Check to see if any orders are pending
+        Return True if there is an active pending order for this symbol.
+        State is read from the TicketBook; no MT5 call is made.
         """
-        orders = mt5.orders_get()
-        if len(orders) > 0:
-            return True
-        else:
-            return False
-    
-    def check_open_positions(self):
+        if self.ticket_book is not None:
+            return self.ticket_book.has_pending_order(self.symbol)
+        return False
+
+    def check_open_positions(self) -> bool:
         """
-        Check to see if any positions have been opened
+        Return True if there is an open (filled) position for this symbol.
+        State is read from the TicketBook; no MT5 call is made.
         """
-        positions = mt5.positions_get()
-        if positions is None:
-            return False
-        elif len(positions) == 0:
-            return False
-        else:
-            return True
+        if self.ticket_book is not None:
+            return self.ticket_book.has_open_position(self.symbol)
+        return False
     
     def make_prediction(self, bar_time=None, pending_order=False, open_position=False, in_restricted_hours=False):
         """
@@ -621,7 +619,7 @@ class TripleBarrierHiLow:
                     qty=self.position_size,
                     entry=self.entry,
                     entry_time=self.t[-1],
-                    expiration=None,
+                    expiration=self.t[-1] + datetime.timedelta(minutes=self.patience),
                     sl=self.stop,
                     tp=self.take
                 )
@@ -669,7 +667,7 @@ class TripleBarrierHiLow:
                     qty=self.position_size,
                     entry=self.entry,
                     entry_time=self.t[-1],
-                    expiration=None,
+                    expiration=self.t[-1] + datetime.timedelta(minutes=self.patience),
                     sl=self.stop,
                     tp=self.take
                 )
@@ -707,39 +705,13 @@ class TripleBarrierHiLow:
                     print(orders)
             else:
                 pass
-        
-        elif pending_order and self.countdown <= 0:
-            # Cancel pending orders after patience expired
-            print(f'\n[STRATEGY CANCEL] Bar time: {self.t[-1]} (timestamp: {int(self.t[-1].timestamp())}) - Patience expired, cancelling pending orders.')
-            if self.mt5_executor is not None:
-                try:
-                    # Query all pending orders and delete any for this symbol
-                    pending_orders = mt5.orders_get(symbol=self.symbol)
-                    if pending_orders:
-                        print(f'Found {len(pending_orders)} pending order(s) for {self.symbol}. Attempting to delete...')
-                        for order in pending_orders:
-                            ticket = order.ticket
-                            try:
-                                result = self.mt5_executor.delete_order(ticket)
-                                if result:
-                                    print(f'Successfully deleted order ticket {ticket}')
-                                else:
-                                    print(f'Failed to delete order ticket {ticket}')
-                            except Exception as e:
-                                print(f'Error deleting order ticket {ticket}: {e}')
-                    else:
-                        print(f'No pending orders found for {self.symbol}.')
-                except Exception as e:
-                    print(f'Error querying or deleting pending orders: {e}')
-            else:
-                print(f'No MT5 executor available to cancel orders.')
         return orders
 
 class TripleBarrierHiLow_XAUUSD:
     """
     Uses similar logic as TripleBarrier, but uses limit orders to time entries and reduce trades that go bad fast.
     """
-    def __init__(self, symbol, model, model_pack, patience, volume=0.1, mt5_executor=None, data_handler=None, debug=True, log=True):
+    def __init__(self, symbol, model, model_pack, patience, volume=0.1, mt5_executor=None, data_handler=None, debug=True, log=True, ticket_book: Optional["TicketBook"] = None):
         self.symbol = symbol
         self.order_type = 'stop'
 
@@ -805,6 +777,8 @@ class TripleBarrierHiLow_XAUUSD:
         self.fills = []
         # Last known signal value (helps detect transitions)
         self.last_signal = 0
+        # TicketBook for state queries (pending / open position checks)
+        self.ticket_book = ticket_book
         
         # Initialize logging
         self.log = log
@@ -865,29 +839,25 @@ class TripleBarrierHiLow_XAUUSD:
         """Cleanup: close log file when strategy is destroyed"""
         if hasattr(self, 'log_file') and self.log_file:
             self.log_file.close()
-    
-    def check_pending_orders(self):
+
+    def check_pending_orders(self) -> bool:
         """
-        Check to see if any orders are pending
+        Return True if there is an active pending order for this symbol.
+        State is read from the TicketBook; no MT5 call is made.
         """
-        orders = mt5.orders_get()
-        if len(orders) > 0:
-            return True
-        else:
-            return False
-    
-    def check_open_positions(self):
+        if self.ticket_book is not None:
+            return self.ticket_book.has_pending_order(self.symbol)
+        return False
+
+    def check_open_positions(self) -> bool:
         """
-        Check to see if any positions have been opened
+        Return True if there is an open (filled) position for this symbol.
+        State is read from the TicketBook; no MT5 call is made.
         """
-        positions = mt5.positions_get()
-        if positions is None:
-            return False
-        elif len(positions) == 0:
-            return False
-        else:
-            return True
-    
+        if self.ticket_book is not None:
+            return self.ticket_book.has_open_position(self.symbol)
+        return False
+
     def make_prediction(self, bar_time=None, pending_order=False, open_position=False, in_restricted_hours=False):
         """
         Helper function: Make a prediction based on the current price data.
@@ -1106,7 +1076,7 @@ class TripleBarrierHiLow_XAUUSD:
                     qty=self.position_size,
                     entry=self.entry,
                     entry_time=self.t[-1],
-                    expiration=None,
+                    expiration=self.t[-1] + datetime.timedelta(minutes=self.patience),
                     sl=self.stop,
                     tp=self.take
                 )
@@ -1155,7 +1125,7 @@ class TripleBarrierHiLow_XAUUSD:
                     qty=self.position_size,
                     entry=self.entry,
                     entry_time=self.t[-1],
-                    expiration=None,
+                    expiration=self.t[-1] + datetime.timedelta(minutes=self.patience),
                     sl=self.stop,
                     tp=self.take
                 )
@@ -1193,30 +1163,4 @@ class TripleBarrierHiLow_XAUUSD:
                     print(orders)
             else:
                 pass
-        
-        elif pending_order and self.countdown <= 0:
-            # Cancel pending orders after patience expired
-            print(f'\n[STRATEGY CANCEL] Bar time: {self.t[-1]} (timestamp: {int(self.t[-1].timestamp())}) - Patience expired, cancelling pending orders.')
-            if self.mt5_executor is not None:
-                try:
-                    # Query all pending orders and delete any for this symbol
-                    pending_orders = mt5.orders_get(symbol=self.symbol)
-                    if pending_orders:
-                        print(f'Found {len(pending_orders)} pending order(s) for {self.symbol}. Attempting to delete...')
-                        for order in pending_orders:
-                            ticket = order.ticket
-                            try:
-                                result = self.mt5_executor.delete_order(ticket)
-                                if result:
-                                    print(f'Successfully deleted order ticket {ticket}')
-                                else:
-                                    print(f'Failed to delete order ticket {ticket}')
-                            except Exception as e:
-                                print(f'Error deleting order ticket {ticket}: {e}')
-                    else:
-                        print(f'No pending orders found for {self.symbol}.')
-                except Exception as e:
-                    print(f'Error querying or deleting pending orders: {e}')
-            else:
-                print(f'No MT5 executor available to cancel orders.')
         return orders

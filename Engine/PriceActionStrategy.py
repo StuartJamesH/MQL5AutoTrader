@@ -215,7 +215,7 @@ class PriceActionTrader:
     def check_pending_orders(self):
         """Check for pending orders using TicketBook"""
         if self.ticketbook:
-            from TicketBookk import OrderStatus
+            from Engine.TicketBook import OrderStatus
             pending = self.ticketbook.get_active_pending_orders(symbol=self.symbol)
             return len(pending) > 0
         else:
@@ -229,7 +229,7 @@ class PriceActionTrader:
     def check_open_positions(self):
         """Check for open positions using TicketBook"""
         if self.ticketbook:
-            from TicketBookk import OrderStatus
+            from Engine.TicketBook import OrderStatus
             filled = self.ticketbook.get_order_history(symbol=self.symbol, status=OrderStatus.FILLED)
             return not filled.empty
         else:

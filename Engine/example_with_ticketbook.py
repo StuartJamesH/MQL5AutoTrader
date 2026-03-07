@@ -11,7 +11,7 @@ This demonstrates the complete integration:
 import sys
 sys.path.append('Engine')
 
-from TicketBookk import TicketBook, OrderStatus
+from Engine.TicketBook import TicketBook, OrderStatus
 from Executor import MT5LiveExecutionHandler
 from Strategy import TripleBarrierHiLow
 from Learn.Models import LSTMClassifier
