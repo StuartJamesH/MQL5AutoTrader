@@ -241,11 +241,27 @@ class HybridLSTMTransformer(nn.Module):
 
 class LSTMAttentionSEClassifier(nn.Module):
     """
-    Bidirectional LSTM + LayerNorm + Squeeze-Excite gating + scaled-dot-product attention pooling.
+    Bidirectional LSTM + LayerNorm + Squeeze-Excite gating + multi-head attention pooling.
 
     SE gates suppress noisy timesteps using a global mean-pool context signal.
-    Attention pooling uses the final LSTM hidden state as the query, focusing the
-    representation on the most salient positions in the sequence.
+    Attention pooling uses either a learned query token (recommended) or the final
+    LSTM hidden state as the query.
+
+    Supports both binary and multiclass trade-signal models:
+
+    Binary (HOLD vs TRADE):
+      - num_classes=2
+      - bias_init: [log(1-p), log(p)]  where p = positive-class rate
+
+    Multiclass (SELL / FLAT / BUY, classes 0 / 1 / 2):
+      - num_classes=3
+      - bias_init: [log(p_sell), log(p_flat), log(p_buy)]
+      - use TradeProfitabilityLoss with trade_classes=(0, 2)
+
+    In both cases:
+      - use_learned_query=True  improves precision vs. using the final hidden state
+      - bias_init starts the output layer at the log class-prior distribution,
+        which stabilises early training on imbalanced labels
     """
 
     def __init__(
@@ -253,14 +269,19 @@ class LSTMAttentionSEClassifier(nn.Module):
         input_dim: int,
         hidden_dim: int = 128,
         num_layers: int = 2,
-        num_classes: int = 3,
+        num_classes: int = 2,          # default 2 for binary (HOLD vs TRADE)
         bidirectional: bool = True,
         dropout: float = 0.2,
         dropout_out: float = 0.3,
+        attn_heads: int = 4,
+        attn_dropout: float = 0.1,
+        use_learned_query: bool = True,
+        bias_init=None,
     ):
         super().__init__()
 
-        self.bidirectional = bidirectional
+        self.bidirectional    = bidirectional
+        self.use_learned_query = use_learned_query
 
         self.lstm = nn.LSTM(
             input_dim,
@@ -278,9 +299,16 @@ class LSTMAttentionSEClassifier(nn.Module):
         self.se_reduce = nn.Linear(lstm_out_dim, se_bottleneck)
         self.se_expand = nn.Linear(se_bottleneck, lstm_out_dim)
 
-        self.q_proj = nn.Linear(lstm_out_dim, lstm_out_dim)
-        self.k_proj = nn.Linear(lstm_out_dim, lstm_out_dim)
-        self.v_proj = nn.Linear(lstm_out_dim, lstm_out_dim)
+        if use_learned_query:
+            self.query_token = nn.Parameter(torch.zeros(1, 1, lstm_out_dim))
+            nn.init.normal_(self.query_token, std=0.02)
+
+        self.attn = nn.MultiheadAttention(
+            embed_dim=lstm_out_dim,
+            num_heads=attn_heads,
+            dropout=attn_dropout,
+            batch_first=True,
+        )
 
         self.fc = nn.Sequential(
             nn.Linear(lstm_out_dim, lstm_out_dim // 2),
@@ -289,26 +317,30 @@ class LSTMAttentionSEClassifier(nn.Module):
             nn.Linear(lstm_out_dim // 2, num_classes),
         )
 
+        if bias_init is not None:
+            _bias_init(self.fc[3], bias_init)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, S, F)
+        B = x.size(0)
+
         h, (hn, _) = self.lstm(x)   # h: (B, S, lstm_out_dim)
         h = self.ln(h)
 
         # Squeeze-Excite: gate each timestep using the global mean-pool context
-        context = h.mean(dim=1)                                                          # (B, lstm_out_dim)
-        se = torch.sigmoid(self.se_expand(torch.relu(self.se_reduce(context))))          # (B, lstm_out_dim)
+        context = h.mean(dim=1)                                               # (B, lstm_out_dim)
+        se = torch.sigmoid(self.se_expand(torch.relu(self.se_reduce(context))))
         h  = h * se.unsqueeze(1)
 
-        # Attention pooling: query from the final LSTM hidden state
-        num_dirs = 2 if self.bidirectional else 1
-        q = hn[-num_dirs:].transpose(0, 1).reshape(h.size(0), -1)  # (B, lstm_out_dim)
-        q = self.q_proj(q).unsqueeze(1)                             # (B, 1, lstm_out_dim)
-        k = self.k_proj(h)                                          # (B, S, lstm_out_dim)
-        v = self.v_proj(h)
+        # Multi-head attention pooling
+        if self.use_learned_query:
+            q = self.query_token.expand(B, -1, -1)                           # (B, 1, lstm_out_dim)
+        else:
+            num_dirs = 2 if self.bidirectional else 1
+            q = hn[-num_dirs:].transpose(0, 1).reshape(B, -1).unsqueeze(1)   # (B, 1, lstm_out_dim)
 
-        scale        = k.size(-1) ** 0.5
-        attn_weights = torch.softmax(torch.matmul(q, k.transpose(1, 2)) / scale, dim=-1)
-        pooled       = torch.matmul(attn_weights, v).squeeze(1)     # (B, lstm_out_dim)
+        pooled, _ = self.attn(q, h, h, need_weights=False)                   # (B, 1, lstm_out_dim)
+        pooled    = pooled.squeeze(1)                                         # (B, lstm_out_dim)
 
         return self.fc(pooled)
 
@@ -451,6 +483,19 @@ class TCNAttentionSEClassifier(nn.Module):
     The TCN stack uses exponentially increasing dilations (2^i) to cover a large
     receptive field with few parameters. SE gating and MHA pooling are applied after
     the TCN to focus on the most informative timesteps.
+
+    Supports both binary and 3-class (multiclass) output heads via `num_classes`:
+
+    **Binary** (``num_classes=2``)::
+
+        bias_init = [math.log(p_hold), math.log(p_trade)]
+
+    **Multiclass** (``num_classes=3``, SELL=0 / FLAT=1 / BUY=2)::
+
+        bias_init = [math.log(p_sell), math.log(p_flat), math.log(p_buy)]
+
+    Receptive-field rule: ``(kernel_size - 1) * (2^num_layers - 1) * 2 + 1 ≈ SEQ_LEN``
+    e.g. kernel_size=3, num_layers=6 → RF ≈ 253 bars (matches SEQ_LEN=256).
     """
 
     def __init__(
