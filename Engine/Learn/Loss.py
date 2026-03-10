@@ -62,12 +62,14 @@ class TradeProfitabilityLoss(nn.Module):
     def forward(self, logits, targets, trade_outcomes=None):
         """
         Args:
-            logits: Model predictions (batch_size, num_classes)
-            targets: True labels (batch_size,)
+            logits:         Model predictions (batch_size, num_classes)
+            targets:        True labels (batch_size,)
             trade_outcomes: Trade profitability outcomes (batch_size, 2)
-                Column 0: sell/short outcomes (for class 0 predictions)
-                Column 1: buy/long outcomes (for class 2 predictions)
-                Values: 1 = TP hit, 0 = timeout, -1 = SL hit
+                Column 0: sell/short outcomes  (aligned with trade_classes[0])
+                Column 1: buy/long  outcomes   (aligned with trade_classes[1])
+                Values: 1 = TP hit, 0 = timeout, -1 = SL hit.
+                TP values may be multiplied (e.g. ×2) before passing in to
+                increase the reward signal; max_outcome normalises accordingly.
         """
         # --- Base Focal Loss ---
         ce = F.cross_entropy(logits, targets, weight=self.alpha, reduction='none')
@@ -76,10 +78,10 @@ class TradeProfitabilityLoss(nn.Module):
         focal = ((1.0 - pt) ** self.gamma) * ce
         mean_focal = focal.mean()
 
-        # --- Precision/Recall Optimization (existing logic) ---
+        # --- Precision/Recall Optimization ---
         trade_idx = list(self.trade_classes)
         p_pos = probs[:, trade_idx].sum(dim=1)
-        
+
         tp_mask = torch.zeros_like(p_pos, dtype=torch.bool)
         for c in trade_idx:
             tp_mask = tp_mask | (targets == c)
@@ -90,101 +92,58 @@ class TradeProfitabilityLoss(nn.Module):
         FN = ((1.0 - p_pos) * tp_mask.float()).sum()
 
         precision = TP / (TP + FP + self.eps)
-        recall = TP / (TP + FN + self.eps)
+        recall    = TP / (TP + FN + self.eps)
 
-        pr_loss = 1.0 - precision
-        rec_loss = 1.0 - recall
-        total_pr_rec = self.pr_weight * pr_loss + self.rec_weight * rec_loss
+        total_pr_rec = self.pr_weight * (1.0 - precision) + self.rec_weight * (1.0 - recall)
 
         if self.f1_weight and (self.f1_weight > 0.0):
             f1 = 2.0 * precision * recall / (precision + recall + self.eps)
-            f1_loss = 1.0 - f1
-            total_pr_rec = total_pr_rec + self.f1_weight * f1_loss
+            total_pr_rec = total_pr_rec + self.f1_weight * (1.0 - f1)
 
-        # --- Profitability Optimization (NORMALIZED for buy/sell outcomes) ---
+        # --- Profitability Optimization (soft expected-profit — fully differentiable) ---
+        # Rather than selecting a single hard-argmax prediction, we compute the
+        # *expected profit* for each sample by weighting each trade class's outcome
+        # by its predicted probability.  Gradients flow to all class probabilities
+        # simultaneously, giving the optimiser a richer signal on every step.
         profit_penalty = 0.0
-        
+
         if trade_outcomes is not None:
-            # Ensure trade_outcomes is a tensor of shape (batch_size, 2)
             if not isinstance(trade_outcomes, torch.Tensor):
                 trade_outcomes = torch.tensor(trade_outcomes, dtype=torch.float32, device=logits.device)
-            
-            # Get predicted class for each sample
-            pred_class = logits.argmax(dim=1)
-            
-            # For each sample, determine which outcome to use based on prediction
-            # Class 0 (short) -> use sell_outcome (column 0)
-            # Class 2 (long) -> use buy_outcome (column 1)
-            # Class 1 (wait) -> no outcome to evaluate
-            
-            # Create mask for trade predictions
-            short_mask = (pred_class == 0)
-            long_mask = (pred_class == 2)
-            trade_pred_mask = short_mask | long_mask
-            
-            if trade_pred_mask.any():
-                # Get outcomes for predicted trades
-                outcomes = torch.zeros(len(logits), device=logits.device)
-                outcomes[short_mask] = trade_outcomes[short_mask, 0]  # sell outcomes
-                outcomes[long_mask] = trade_outcomes[long_mask, 1]   # buy outcomes
-                
-                # Get probability of the predicted trade
-                p_trade = torch.zeros(len(logits), device=logits.device)
-                p_trade[short_mask] = probs[short_mask, 0]  # prob of short
-                p_trade[long_mask] = probs[long_mask, 2]    # prob of long
-                
-                # Only consider samples where we predicted a trade
-                p_trade_active = p_trade[trade_pred_mask]
-                outcomes_active = outcomes[trade_pred_mask]
-                n_trade_preds = trade_pred_mask.sum().float()
-                
-                # --- Normalized Reward for profitable predictions ---
-                # Compute: (sum of confidence on profitable trades) / (total trade predictions)
-                # This gives a value in [0, 1] representing the "profit rate" weighted by confidence
-                profitable_mask = (outcomes_active == 1)
-                n_profitable = profitable_mask.sum().float()
-                
-                if n_profitable > 0:
-                    p_trade_profitable = p_trade_active[profitable_mask]
-                    # Sum confidence on profitable trades, normalize by total trade predictions
-                    profit_score = p_trade_profitable.sum() / (n_trade_preds + self.eps)
-                    # Convert to loss (we want to maximize profit_score, so minimize 1 - profit_score)
-                    profit_loss = 1.0 - profit_score
-                    profit_penalty = profit_penalty + self.profit_weight * profit_loss
-                
-                # --- Normalized Penalty for unprofitable predictions ---
-                # Compute: (sum of confidence on unprofitable trades) / (total trade predictions)
-                # This gives a value in [0, 1] representing the "loss rate" weighted by confidence
-                unprofitable_mask = (outcomes_active == -1)
-                n_unprofitable = unprofitable_mask.sum().float()
-                
-                if n_unprofitable > 0:
-                    p_trade_unprofitable = p_trade_active[unprofitable_mask]
-                    # Sum confidence on unprofitable trades, normalize by total trade predictions
-                    loss_score = p_trade_unprofitable.sum() / (n_trade_preds + self.eps)
-                    # Penalty: directly penalize the loss_score (already in [0,1])
-                    profit_penalty = profit_penalty + self.loss_penalty * loss_score
-                
-                # --- Normalized Direction Bonus ---
-                # Reward when model predicts correct direction for profitable trades
-                # Normalized by total trade predictions for consistency
-                if self.direction_bonus > 0.0 and n_profitable > 0:
-                    # Check if the predicted direction matches the target for profitable trades
-                    pred_class_active = pred_class[trade_pred_mask]
-                    targets_active = targets[trade_pred_mask]
-                    
-                    pred_profitable = pred_class_active[profitable_mask]
-                    targets_profitable = targets_active[profitable_mask]
-                    
-                    # Only reward when direction matches AND trade is profitable
-                    correct_direction = (pred_profitable == targets_profitable).float()
-                    p_correct = p_trade_active[profitable_mask]
-                    
-                    # Sum confidence on correctly-directed profitable trades, normalize
-                    direction_score = (p_correct * correct_direction).sum() / (n_trade_preds + self.eps)
-                    # Convert to loss (want to maximize direction_score)
-                    direction_loss = 1.0 - direction_score
-                    profit_penalty = profit_penalty + self.direction_bonus * direction_loss
+
+            sell_cls, buy_cls = self.trade_classes[0], self.trade_classes[1]
+            p_sell = probs[:, sell_cls]   # (B,)
+            p_buy  = probs[:, buy_cls]    # (B,)
+            sell_out = trade_outcomes[:, 0]   # (B,)
+            buy_out  = trade_outcomes[:, 1]   # (B,)
+
+            # Soft expected profit per sample (signed; range ≈ [-2, 2] with doubled TP)
+            expected = p_sell * sell_out + p_buy * buy_out   # (B,)
+
+            # Normalise by the doubled-TP upper bound so scores stay in [0, 1]
+            max_outcome = 2.0
+            profit_score = expected.clamp(min=0).mean() / max_outcome   # [0, 1]
+            loss_score   = (-expected).clamp(min=0).mean() / max_outcome  # [0, 1]
+
+            profit_penalty = (
+                self.profit_weight * (1.0 - profit_score) +
+                self.loss_penalty  * loss_score
+            )
+
+            # Direction bonus: reward high P(correct trade class) on profitable bars.
+            # On bars where a sell trade is profitable, we want p_sell to be high;
+            # on bars where a buy trade is profitable, we want p_buy to be high.
+            if self.direction_bonus > 0.0:
+                bonus_scores = []
+                sell_profitable = sell_out > 0
+                buy_profitable  = buy_out  > 0
+                if sell_profitable.any():
+                    bonus_scores.append(p_sell[sell_profitable].mean())
+                if buy_profitable.any():
+                    bonus_scores.append(p_buy[buy_profitable].mean())
+                if bonus_scores:
+                    dir_score = torch.stack(bonus_scores).mean()
+                    profit_penalty = profit_penalty + self.direction_bonus * (1.0 - dir_score)
 
         # --- Combine all losses ---
         loss = mean_focal + total_pr_rec + profit_penalty

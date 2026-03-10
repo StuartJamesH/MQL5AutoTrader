@@ -1,6 +1,17 @@
+"""
+Feature engineering for OHLCV price data.
+
+Public API
+----------
+  add_all_features            — Full feature set (all indicators + MTF)
+  add_selected_features       — Reduced feature set for faster training
+  add_price_features          — Minimal OHLC-only feature set
+  add_multitimeframe_features — Higher-timeframe indicator overlay
+"""
+
+import numpy as np
 import pandas as pd
 import talib
-import numpy as np
 from talib import ATR
 from Learn.labels import causal_market_regime
 
@@ -65,21 +76,8 @@ def _default_mtf_timeframes(df: pd.DataFrame) -> list:
 
 def donchian_trend(df: pd.DataFrame, length: int = 20) -> pd.Series:
     """
-    Donchian Trend (PineScript-equivalent)
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Must contain columns: 'High', 'Low', 'Close'
-    length : int
-        Donchian Channel lookback period
-
-    Returns
-    -------
-    pd.Series
-        Trend series:
-        +1 = uptrend
-        -1 = downtrend
+    Donchian channel trend direction (+1 uptrend, -1 downtrend).
+    Equivalent to the TradingView / PineScript Donchian Trend indicator.
     """
 
     high = df['High']
@@ -105,19 +103,7 @@ def donchian_trend(df: pd.DataFrame, length: int = 20) -> pd.Series:
     return pd.Series(trend, index=df.index, name="donchian_trend")
 
 def time_in_trend(trend_series: pd.Series) -> pd.Series:
-    """
-    Calculate time spent in current trend.
-
-    Parameters
-    ----------
-    trend_series : pd.Series
-        Series containing trend values (+1, -1)
-
-    Returns
-    -------
-    pd.Series
-        Series with time spent in current trend
-    """
+    """Bar count since the last trend direction change (+1 / -1)."""
     time_in_trend = np.zeros(len(trend_series), dtype=int)
 
     for i in range(1, len(trend_series)):
@@ -129,6 +115,7 @@ def time_in_trend(trend_series: pd.Series) -> pd.Series:
     return pd.Series(time_in_trend, index=trend_series.index, name="time_in_trend")
 
 def checkhl(data_back, data_forward, hl):
+    """Return 1 if the last element of data_back is a pivot high/low, 0 otherwise."""
     if hl == 'high' or hl == 'High':
         ref = data_back[len(data_back)-1]
         for i in range(len(data_back)-1):
@@ -150,6 +137,7 @@ def checkhl(data_back, data_forward, hl):
 
 
 def pivot(osc, LBL, LBR, highlow):
+    """Detect pivot highs/lows in osc using LBL left bars and LBR right bars."""
     left = []
     right = []
     pivots = []
@@ -167,20 +155,17 @@ def pivot(osc, LBL, LBR, highlow):
                 pivots[i - LBR] = osc[i - LBR]
     return pivots
 
-def WMA(series, period):
+def WMA(series: pd.Series, period: int) -> pd.Series:
+    """Weighted Moving Average — linearly increasing weights over period."""
     weights = np.arange(1, period + 1)
     return series.rolling(period).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
 
-def HMA(series, timeperiod):
-    # Step 1: WMA(period/2) * 2
+
+def HMA(series: pd.Series, timeperiod: int) -> pd.Series:
+    """Hull Moving Average — reduces lag by combining fast/slow WMAs."""
     wma_half = WMA(series, timeperiod // 2) * 2
-
-    # Step 2: WMA(period)
     wma_full = WMA(series, timeperiod)
-
-    # Step 3: WMA(sqrt(period)) on the difference
-    diff = wma_half - wma_full
-    return WMA(diff, int(np.sqrt(timeperiod)))
+    return WMA(wma_half - wma_full, int(np.sqrt(timeperiod)))
 
 def efficiency_ratio(series: pd.Series, window: int) -> pd.Series:
     """Kaufman Efficiency Ratio: trend strength vs noise (causal)."""
@@ -242,18 +227,19 @@ def atr_filter(df, atr_window=28, atr_threshold=40.0, cooldown=5):
     return df['atr_filter']
 
 
-def add_multitimeframe_features(df, timeframes=['5min', '15min', '30min', '60min'], causal=True):
+def add_multitimeframe_features(
+        df: pd.DataFrame,
+        timeframes: list = ['5min', '15min', '30min', '60min'],
+        causal: bool = True,
+) -> pd.DataFrame:
     """
-    Add features from higher timeframes to capture longer-term trends.
-    
-    Parameters:
-    -----------
-    df : DataFrame with Time, Open, High, Low, Close, Volume columns
-    timeframes : list of pandas resample strings (e.g., '5min' = 5 minutes)
-    
-    Returns:
-    --------
-    DataFrame with additional MTF (multi-timeframe) features
+    Resample OHLCV data to each higher timeframe and append trend/momentum indicators.
+
+    Parameters
+    ----------
+    df         : DataFrame with columns Time, Open, High, Low, Close, Volume
+    timeframes : Pandas resample strings for each higher timeframe (e.g. '15min')
+    causal     : If True, shift HTF features by 1 bar to prevent lookahead leakage
     """
     df = df.copy()
     df_original = df.copy()
@@ -280,35 +266,34 @@ def add_multitimeframe_features(df, timeframes=['5min', '15min', '30min', '60min
             'Volume': 'sum'
         }).dropna()
         
-        # Calculate key indicators on higher timeframe
-        # 1. Trend direction (EMA crossover)
+        # Trend direction (EMA crossover)
         ema_fast = talib.EMA(df_tf['Close'], timeperiod=8)
         ema_slow = talib.EMA(df_tf['Close'], timeperiod=21)
         df_tf[f'MTF_{tf}_trend'] = np.sign(ema_fast - ema_slow)  # +1 uptrend, -1 downtrend
-        
-        # 2. Trend strength (ADX)
+
+        # Trend strength (ADX)
         df_tf[f'MTF_{tf}_adx'] = talib.ADX(df_tf['High'], df_tf['Low'], df_tf['Close'], timeperiod=14) / 100
-        
-        # 3. Price momentum (ROC - Rate of Change)
+
+        # Price momentum (ROC - Rate of Change)
         df_tf[f'MTF_{tf}_roc'] = talib.ROC(df_tf['Close'], timeperiod=10) / 100
-        
-        # 4. RSI for overbought/oversold on higher TF
+
+        # RSI: overbought / oversold on the higher timeframe
         df_tf[f'MTF_{tf}_rsi'] = talib.RSI(df_tf['Close'], timeperiod=14) / 100
-        
-        # 5. Distance from EMA (normalized)
+
+        # Distance from EMA (ATR-normalised)
         atr_tf = talib.ATR(df_tf['High'], df_tf['Low'], df_tf['Close'], timeperiod=14)
         df_tf[f'MTF_{tf}_ema_dist'] = (df_tf['Close'] - ema_slow) / (atr_tf + 1e-9)
-        
-        # 6. Slope of higher timeframe
+
+        # Log-price slope
         # IMPORTANT: keep the slope window fixed; do not make it a function of
         # dataset length, otherwise bulk vs live computations diverge.
         df_tf[f'MTF_{tf}_slope'] = rolling_slope_logprice(df_tf['Close'], window=10)
-        
-        # 7. Higher high / Lower low detection
+
+        # Higher high / lower low detection
         df_tf[f'MTF_{tf}_hh'] = (df_tf['High'] >= df_tf['High'].rolling(5).max().shift(1)).astype(int)
         df_tf[f'MTF_{tf}_ll'] = (df_tf['Low'] <= df_tf['Low'].rolling(5).min().shift(1)).astype(int)
 
-        # 8. Donchian Trend and Time in Trend
+        # Donchian trend and time-in-trend
         df_tf[f'MTF_{tf}_donchian_trend'] = donchian_trend(df_tf, length=20)
         df_tf[f'MTF_{tf}_time_in_trend'] = time_in_trend(df_tf[f'MTF_{tf}_donchian_trend'])
         
@@ -335,8 +320,19 @@ def add_multitimeframe_features(df, timeframes=['5min', '15min', '30min', '60min
     
     return df_result
 
-def add_all_features(df, lookback=8, vol_window=20, include_mtf=True, regime_params=None):
+def add_all_features(
+        df: pd.DataFrame,
+        lookback: int = 8,
+        vol_window: int = 20,
+        include_mtf: bool = True,
+        regime_params: dict = None,
+) -> pd.DataFrame:
+    """
+    Compute the full feature set used for model training.
 
+    Appends log-return, volatility, momentum, ATR-normalised, MTF, indicator,
+    and one-hot features to the input DataFrame in-place on a copy.
+    """
     df = df.copy()
     
     # Add multi-timeframe features first (if requested)
@@ -407,7 +403,7 @@ def add_all_features(df, lookback=8, vol_window=20, include_mtf=True, regime_par
     df['L_ema'] = df['Low'] - ema
     df['C_ema'] = df['Close'] - ema
 
-    # Rolling Slopes
+    # ATR & slope features
     atr = talib.ATR(df['High'], df['Low'], df['Close'], timeperiod=14)
 
     # ATR-based regime scalars
@@ -533,9 +529,7 @@ def add_all_features(df, lookback=8, vol_window=20, include_mtf=True, regime_par
     df['above_ema50_streak'] = _streak(df['above_ema50'])
     df['below_ema50_streak'] = _streak_down(df['above_ema50'])
 
-    # De-emphasize magnitude-only features by removing absolute-only proxies
-
-    # Z-Scores (as from signal generation)
+    # Z-Scores
     df["mean"] = df["Close"].rolling(14).mean()
     df["std"]  = df["Close"].rolling(14).std()
     df["z"] = (df["Close"] - df["mean"]) / df["std"]
@@ -549,12 +543,11 @@ def add_all_features(df, lookback=8, vol_window=20, include_mtf=True, regime_par
     bb_lower = bbands[2]
 
     df['bb_width'] = (bb_upper - bb_lower) / bb_mid
-    # df['bb_dist'] = (df['Close'] - bb_mid) / (df['bb_width'] + 1e-6)
 
     # Additional One-Hot Features
     df['OH_CCI'] = [1 if x>=100 else -1 if x<=-100 else 0 for x in talib.CCI(df['High'], df['Low'], df['Close'], timeperiod=14)]
 
-    ## Price based indicators
+    # ── Price-based indicators ────────────────────────────────────────────────
     for ind in [talib.EMA]:
         for period in [8,21,50,128]:
             df[f'PR_{ind.__name__}_{period}'] = ind(df['Close'], period)
@@ -562,7 +555,7 @@ def add_all_features(df, lookback=8, vol_window=20, include_mtf=True, regime_par
     df[f'OH_LOWEST_LOW_{lookback}'] = (df['Low'] == df['Low'].rolling(lookback, min_periods=1).min()).astype(int)
     df[f'OH_HIGHEST_HIGH_{lookback}'] = (df['High'] == df['High'].rolling(lookback, min_periods=1).max()).astype(int)
 
-    ## Oscilators and other misc stuff
+    # ── Oscillators ───────────────────────────────────────────────────────────
     df['RSI'] = talib.RSI(df['Close'], timeperiod=7)/100
     df['MFI'] = talib.MFI(df['High'], df['Low'], df['Close'], df['Volume'], timeperiod=14)/100
     df['ADX'] = talib.ADX(df['High'], df['Low'], df['Close'], timeperiod=14)/100
@@ -577,10 +570,9 @@ def add_all_features(df, lookback=8, vol_window=20, include_mtf=True, regime_par
     df['AroonDown'] = df['AroonDown']/100
     df['AroonOsc'] = df['AroonUp'] - df['AroonDown']
 
-    # Figure out how to scale later
+    # TODO: determine appropriate MACD scaling
     df['MACD'], df['MACD_signal'], df['MACD_hist'] = talib.MACD(df['Close'], fastperiod=12, slowperiod=26, signalperiod=9)
     df['ATR'] = talib.ATR(df['High'], df['Low'], df['Close'], timeperiod=14)
-    # df['OBV'] = talib.OBV(df['Close'], df['Volume'])
     # MACD slope (trend momentum)
     try:
         df['macd_hist_slope_9'] = pd.Series(df['MACD_hist']).diff(9) / (atr + 1e-9)
@@ -612,8 +604,7 @@ def add_all_features(df, lookback=8, vol_window=20, include_mtf=True, regime_par
     df['volume_z'] = (df['Volume'] - vmean) / (vstd + eps)
     df['vol_direction'] = np.sign(df['log_return'].fillna(0)) * df['volume_z']
 
-    # Final trend_score: combine ADX (already scaled /100 above) and normalized slope magnitude
-    # If ADX computed earlier as a float between 0-1, rescale to 0-100 for intuitive thresholds
+    # Final trend confidence score
     try:
         # Enhanced composite trend score combining ADX, DI bias, and EMA slope
         comp = (
@@ -663,8 +654,20 @@ def add_all_features(df, lookback=8, vol_window=20, include_mtf=True, regime_par
 
     return df
 
-def add_selected_features(df, lookback=8, vol_window=20, include_mtf=True, regime_params=None):
+def add_selected_features(
+        df: pd.DataFrame,
+        lookback: int = 8,
+        vol_window: int = 20,
+        include_mtf: bool = True,
+        regime_params: dict = None,
+) -> pd.DataFrame:
+    """
+    Compute a reduced feature set optimised for faster training runs.
 
+    Contains a subset of `add_all_features` indicators. Does not include the
+    full ATR/EMA multiverse — only the features found most predictive in
+    ablation experiments.
+    """
     df = df.copy()
     
     # Add multi-timeframe features first (if requested)
@@ -782,8 +785,7 @@ def add_selected_features(df, lookback=8, vol_window=20, include_mtf=True, regim
     donchian_mid_60 = (df['High'].rolling(60).max() + df['Low'].rolling(60).min()) / 2.0
     df['donchian_pressure'] = (df['Close'] - donchian_mid_60) / (atr + 1e-9)
 
-    # De-emphasize magnitude-only features by removing absolute-only proxies
-    # Z-Scores (as from signal generation)
+    # Z-Scores
     df["mean"] = df["Close"].rolling(14).mean()
     df["std"]  = df["Close"].rolling(14).std()
     df["z"] = (df["Close"] - df["mean"]) / df["std"]
@@ -793,7 +795,7 @@ def add_selected_features(df, lookback=8, vol_window=20, include_mtf=True, regim
     # Additional One-Hot Features
     df['OH_CCI'] = [1 if x>=100 else -1 if x<=-100 else 0 for x in talib.CCI(df['High'], df['Low'], df['Close'], timeperiod=14)]
 
-    ## Price based indicators
+    # ── Price-based indicators ────────────────────────────────────────────────
     for ind in [talib.EMA]:
         for period in [21]:
             df[f'PR_{ind.__name__}_{period}'] = ind(df['Close'], period)
@@ -801,7 +803,7 @@ def add_selected_features(df, lookback=8, vol_window=20, include_mtf=True, regim
     df[f'OH_LOWEST_LOW_{lookback}'] = (df['Low'] == df['Low'].rolling(lookback, min_periods=1).min()).astype(int)
     df[f'OH_HIGHEST_HIGH_{lookback}'] = (df['High'] == df['High'].rolling(lookback, min_periods=1).max()).astype(int)
 
-    ## Oscilators and other misc stuff
+    # ── Oscillators ────────────────────────────────────────────────────────────
     df['MFI'] = talib.MFI(df['High'], df['Low'], df['Close'], df['Volume'], timeperiod=14)/100
 
     df['StochK'], df['StochD'] = talib.STOCH(df['High'], df['Low'], df['Close'], fastk_period=14, slowk_period=3, slowk_matype=0, slowd_period=3, slowd_matype=0)
@@ -811,9 +813,6 @@ def add_selected_features(df, lookback=8, vol_window=20, include_mtf=True, regim
     # Volume regime features (works with tick volume too)
     df['log_volume'] = np.log1p(df['Volume'].astype(float))
 
-    # Final trend_score: combine ADX (already scaled /100 above) and normalized slope magnitude
-    # If ADX computed earlier as a float between 0-1, rescale to 0-100 for intuitive thresholds
-    
     # Add trend alignment features if MTF features exist
     if 'MTF_5min_trend' in df.columns:
         
@@ -842,8 +841,11 @@ def add_selected_features(df, lookback=8, vol_window=20, include_mtf=True, regim
 
     return df
 
-def add_price_features(df):
-
+def add_price_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Minimal OHLC feature set: time, log-return, and relative OHLC columns only.
+    Used as a lightweight baseline for price-action-only models.
+    """
     df = df.copy()
 
     # Add time based features

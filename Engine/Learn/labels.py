@@ -412,7 +412,9 @@ def causal_market_regime(df, ma_period=21, slope_smoothness=1, regime_min_durati
     slope = ma.diff()
     slope_sm = super_smoother(slope, period=slope_smoothness)
 
-    # 3. Directional regime by sign of smoothed slope (no percentile param)
+    # 3. Directional regime by slope magnitude vs threshold
+    # Bars where |slope| < slope_threshold start as 0 (undecided); the forward-fill
+    # in step 4 will carry the previous trend through these flat patches.
     regime = pd.Series(0, index=df.index, dtype=int)
     regime[slope_sm > 0] = 1
     regime[slope_sm < 0] = -1

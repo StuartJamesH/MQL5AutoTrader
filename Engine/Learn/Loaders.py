@@ -5,7 +5,16 @@ import numpy as np
 from collections import Counter
 
 class SequenceDataset(Dataset):
-    def __init__(self, X, y, seq_len, df_idx=None, custom_targets=None, safe=True, trade_outcomes=None):
+    def __init__(self, X, y, seq_len, df_idx=None, custom_targets=None, safe=True,
+                 trade_outcomes=None, seq_idx_filter=None):
+        """
+        seq_idx_filter : list[int] | None
+            If provided, only these sequence-start indices are included in the
+            dataset (anchor-time / session gating).  Each value ``i`` in the
+            list must satisfy ``0 <= i < len(X) - seq_len``; the prediction
+            anchor is at row ``i + seq_len - 1``.
+            When ``None`` (default) all valid sequences are included.
+        """
         self.X = X
         self.y = y
         self.seq_len = seq_len
@@ -19,7 +28,11 @@ class SequenceDataset(Dataset):
         # Build sequences and targets
         self.y_seqs = np.array([self.y[i+self.seq_len] for i in range(self.num_samples)])
         self.indices = np.arange(len(self.y_seqs))
-        
+
+        # Anchor-time / session gating: restrict to caller-supplied sequence indices
+        if seq_idx_filter is not None:
+            self.indices = np.array(seq_idx_filter, dtype=np.int64)
+
         if custom_targets is not None:
             # Initialize with original indices
             new_indices = []

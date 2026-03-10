@@ -1,9 +1,20 @@
+"""
+Preprocessing pipeline for OHLCV feature matrices.
+
+Functions:
+  preprocess_ohlcv       — Primary preprocessing pipeline (RobustScaler, auto-detects feature groups)
+  _preprocess_ohlcv      — Legacy preprocessing pipeline (StandardScaler)
+  oversample_sequences   — Class-balance oversampling for sequence arrays
+  filter_signals_profit  — Retain only signals that reached take-profit within a horizon
+  filter_signals_ema     — Mask signals that oppose the EMA trend direction
+"""
+
+from collections import Counter
+
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from talib import EMA
-
-from collections import Counter
 
 def preprocess_ohlcv(
         df, 
@@ -90,7 +101,7 @@ def preprocess_ohlcv(
     normalized_passthrough = [c for c in df.columns if _is_normalized_feature(c)]
 
     # Exclude non-feature columns and constant columns from scaling group
-    exclude = set(['Time','Open','High','Low','Close','Volume','Pivot','target','vol','outcomes','C_rel', 'sell_y', 'buy_y']) # 
+    exclude = set(['Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'Pivot', 'target', 'vol', 'outcomes', 'C_rel', 'sell_y', 'buy_y'])
 
     # Also exclude any provided label/outcome columns from ALL feature groups
     label_exclude = set(['Pivot','target', 'sell_y', 'buy_y'])
@@ -174,31 +185,37 @@ def preprocess_ohlcv(
 
     return X, y, scaler, feature_cols
 
-def _preprocess_ohlcv(df, target_col=None, shift=0, onehot_prefixes=['OH_'], price_prefixes=['PR_'], vol_window=20, scaler=None, return_df=False):
+def _preprocess_ohlcv(
+        df,
+        target_col=None,
+        shift=0,
+        onehot_prefixes=['OH_'],
+        price_prefixes=['PR_'],
+        vol_window=20,
+        scaler=None,
+        return_df=False,
+):
     """
-    Preprocess OHLCV dataframe for ML models (classification/regression).
-    
-    Features included:
-      - log returns
-      - relative OHLC (normalized by Close)
-      - volatility-scaled returns
-      - engineered features (continuous scaled, one-hot untouched)
+    Legacy preprocessing pipeline (StandardScaler).
+
+    Prefer `preprocess_ohlcv` for new training runs.
+    Kept for backward compatibility with older model packs.
     """
     
     df = df.copy()
 
     ema = EMA(df['Close'], timeperiod=20)
     
-    # --- 1. Compute log returns ---
+    # Compute log returns
     df['log_return'] = np.log(df['Close'] / df['Close'].shift(1))
-    
-    # --- 2. Relative OHLC features (normalize by Close) ---
+
+    # Relative OHLC features (normalize by Close)
     df['O_rel'] = (df['Open'] - df['Close']) / df['Close']
     df['H_rel'] = (df['High'] - df['Close']) / df['Close']
     df['L_rel'] = (df['Low'] - df['Close']) / df['Close']
     df['C_rel'] = 0.0  # always baseline
-    
-    # --- 3. Volatility scaling (rolling std of returns) ---
+
+    # Volatility scaling (rolling std of returns)
     df['vol'] = df['log_return'].rolling(vol_window).std()
     df['ret_vol_scaled'] = df['log_return'] / df['vol']
 
@@ -207,87 +224,70 @@ def _preprocess_ohlcv(df, target_col=None, shift=0, onehot_prefixes=['OH_'], pri
     df['L_ema'] = df['Low'] - ema
     df['C_ema'] = df['Close'] - ema
 
-    # --- 4. Drop NaNs from rolling ---
+    # Drop NaNs introduced by rolling windows
     df = df.dropna().reset_index(drop=True)
-    
-    # --- 5. Split engineered features ---
-    if onehot_prefixes is None:
-        onehot_prefixes = []  # user-defined list of col prefixes
 
+    # Split engineered features
+    if onehot_prefixes is None:
+        onehot_prefixes = []
     if price_prefixes is None:
         price_prefixes = []
-    
-    # detect one-hot features
-    onehot_features = [c for c in df.columns 
-                       if any(c.startswith(p) for p in onehot_prefixes)]
-    
-    # detect price-based features
-    price_features = [c for c in df.columns 
-                      if any(c.startswith(p) for p in price_prefixes)]
-    
-    # Convert to relative changes with respect to Close
+
+    # Detect one-hot and price-based feature columns by prefix
+    onehot_features = [c for c in df.columns if any(c.startswith(p) for p in onehot_prefixes)]
+    price_features  = [c for c in df.columns if any(c.startswith(p) for p in price_prefixes)]
+
+    # Normalize price-based features relative to Close
     for c in price_features:
-        df[c] = (df[c] - df['Close']) / df['Close']  # normalize by Close
-    
-    # detect continuous engineered features (everything else except OHLCV + labels)
-    exclude = set(['Time','Open','High','Low','Close','Volume','Pivot','target','vol'])
-    base_features = ['log_return','O_rel','H_rel','L_rel','ret_vol_scaled']
-    cont_features = [c for c in df.columns if c not in exclude 
-                     and c not in onehot_features
-                    #  and c not in price_features
-                     and c not in base_features]
-    
-    # --- 6. Scale continuous features ---
-    # minmax_scaler = MinMaxScaler()
-    # X_cont_minmax = minmax_scaler.fit_transform(df[base_features + cont_features].values)
+        df[c] = (df[c] - df['Close']) / df['Close']
+
+    # Detect continuous engineered features (everything else except OHLCV + labels)
+    exclude       = set(['Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'Pivot', 'target', 'vol'])
+    base_features = ['log_return', 'O_rel', 'H_rel', 'L_rel', 'ret_vol_scaled']
+    cont_features = [
+        c for c in df.columns
+        if c not in exclude and c not in onehot_features and c not in base_features
+    ]
+
+    # Scale continuous features
     if scaler is None:
         scaler = StandardScaler()
-        # X_cont = scaler.fit_transform(X_cont_minmax)
         X_cont = scaler.fit_transform(df[base_features + cont_features].values)
     else:
         X_cont = scaler.transform(df[base_features + cont_features].values)
-    
-    # --- 7. Concatenate with one-hot features (no scaling) ---
-    if onehot_features:
-        X_onehot = df[onehot_features].values
-        X = np.hstack([X_cont, X_onehot])
-    else:
-        X = X_cont
-    
-    # --- 8. Targets (next candle Pivot) ---
+
+    # Concatenate one-hot features without scaling
+    X = np.hstack([X_cont, df[onehot_features].values]) if onehot_features else X_cont
+
+    # Shift target and align X
     if target_col is not None:
         df['target'] = df[target_col].shift(shift)
     else:
         y = None
-    
-    df = df.dropna().reset_index(drop=True)
-    X = X[shift:,:]  # align with shifted target
 
-    if target_col is not None:
-        y = df['target'].values
-    else:
-        y = None
-    
-    
-    feature_cols = (base_features + cont_features + onehot_features)
+    df = df.dropna().reset_index(drop=True)
+    X  = X[shift:, :]  # align with shifted target
+
+    y = df['target'].values if target_col is not None else None
+
+    feature_cols = base_features + cont_features + onehot_features
 
     if return_df:
-        # Build the processed dataframe aligned with X and y so callers can map back to prices
-        proc_df = df.copy()
-        # proc_df at this point has been shifted and dropna() applied in the function
-        # ensure index is reset and aligned with X rows
-        proc_df = proc_df.reset_index(drop=True)
-        return X, y, scaler, feature_cols, proc_df
+        return X, y, scaler, feature_cols, df.reset_index(drop=True)
 
     return X, y, scaler, feature_cols
 
 def oversample_sequences(X_seq, y_seq, multiplier=1.0, custom_targets=None):
     """
-    Oversample sequences to balance classes.
-    - multiplier: float, 1.0 = balance to max class, <1.0 = less oversampling
-    - custom_targets: dict {class_label: target_count}, overrides multiplier
+    Oversample minority-class sequences to balance the training distribution.
+
+    Parameters
+    ----------
+    X_seq         : np.ndarray — sequence array (N, seq_len, features)
+    y_seq         : np.ndarray — label array (N,)
+    multiplier    : float — target count relative to majority class (1.0 = full balance)
+    custom_targets: dict — {class_label: target_count}, overrides multiplier per class
     """
-    from collections import Counter
     counts = Counter(y_seq)
     max_count = max(counts.values())
     X_balanced, y_balanced = [], []
@@ -310,7 +310,10 @@ def oversample_sequences(X_seq, y_seq, multiplier=1.0, custom_targets=None):
     return X_bal[p], y_bal[p]
 
 def filter_signals_profit(ohlc, pivot_col='Pivot', target_col='target', signal_lookback=1):
-
+    """
+    Retain only signals that reached their take-profit level within a 60-bar horizon.
+    Signals that hit stop-loss or expired are zeroed out.
+    """
     df = ohlc.copy()
     df['exit_type'] = 'none'
     df['exit_idx'] = pd.NA
@@ -364,7 +367,10 @@ def filter_signals_profit(ohlc, pivot_col='Pivot', target_col='target', signal_l
     return df
 
 def filter_signals_ema(ohlc, pivot_col='Pivot', target_col='target', signal_lookback=1, ema1=8, ema2=30):
-
+    """
+    Mask signals that oppose the short/long EMA trend direction.
+    BUY signals are zeroed when ema1 < ema2; SELL signals when ema1 > ema2.
+    """
     df = ohlc.copy()
     df['ema1'] = EMA(df['Close'], timeperiod=ema1)
     df['ema2'] = EMA(df['Close'], timeperiod=ema2)
