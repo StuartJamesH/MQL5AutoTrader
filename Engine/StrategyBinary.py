@@ -4,15 +4,16 @@ from collections import deque
 import datetime
 import os
 import csv
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple, TYPE_CHECKING
 
 import pandas as pd
 import torch
 import talib
 
-import MetaTrader5 as mt5
-
 from DataHandler import Order
+
+if TYPE_CHECKING:
+    from TicketBook import TicketBook
 
 
 class TripleBarrierHiLowBinary:
@@ -49,6 +50,7 @@ class TripleBarrierHiLowBinary:
         maxpos: float = 0.5,
         debug: bool = True,
         log: bool = True,
+        ticket_book: Optional["TicketBook"] = None,
     ):
         self.symbol = symbol
         self.order_type = "stop"
@@ -111,6 +113,7 @@ class TripleBarrierHiLowBinary:
         self.pending_order_ticket = None
         self.fills = []
         self.last_signal = 0
+        self.ticket_book = ticket_book
 
         # --- Logging ---
         self.log = log
@@ -228,18 +231,18 @@ class TripleBarrierHiLowBinary:
         return None, None
 
     def check_pending_orders(self) -> bool:
-        try:
-            orders = mt5.orders_get()
-            return bool(orders) and len(orders) > 0
-        except Exception:
-            return False
+        """Return True if there is an active pending order for this symbol.
+        State is read from the TicketBook; no MT5 call is made."""
+        if self.ticket_book is not None:
+            return self.ticket_book.has_pending_order(self.symbol)
+        return False
 
     def check_open_positions(self) -> bool:
-        try:
-            positions = mt5.positions_get()
-            return bool(positions) and len(positions) > 0
-        except Exception:
-            return False
+        """Return True if there is an open (filled) position for this symbol.
+        State is read from the TicketBook; no MT5 call is made."""
+        if self.ticket_book is not None:
+            return self.ticket_book.has_open_position(self.symbol)
+        return False
 
     def _compute_binary_signal(
         self,
@@ -480,7 +483,7 @@ class TripleBarrierHiLowBinary:
                     qty=self.position_size,
                     entry=self.entry,
                     entry_time=self.t[-1],
-                    expiration=None,
+                    expiration=self.t[-1] + datetime.timedelta(minutes=self.patience),
                     sl=self.stop,
                     tp=self.take,
                 )
@@ -506,7 +509,7 @@ class TripleBarrierHiLowBinary:
                     qty=self.position_size,
                     entry=self.entry,
                     entry_time=self.t[-1],
-                    expiration=None,
+                    expiration=self.t[-1] + datetime.timedelta(minutes=self.patience),
                     sl=self.stop,
                     tp=self.take,
                 )
@@ -534,44 +537,5 @@ class TripleBarrierHiLowBinary:
                         in_restricted_hours=in_restricted_hours,
                         action_taken="none",
                     )
-
-        elif pending_order and self.countdown <= 0:
-            print(
-                f"\n[STRATEGY CANCEL] Bar time: {self.t[-1]} (timestamp: {int(self.t[-1].timestamp())}) - Patience expired, cancelling pending orders."
-            )
-            if self.mt5_executor is not None:
-                try:
-                    pending_orders = mt5.orders_get(symbol=self.symbol)
-                    if pending_orders:
-                        print(
-                            f"Found {len(pending_orders)} pending order(s) for {self.symbol}. Attempting to delete..."
-                        )
-                        for o in pending_orders:
-                            ticket = getattr(o, "ticket", None)
-                            if ticket is None:
-                                continue
-                            try:
-                                result = self.mt5_executor.delete_order(ticket)
-                                if result:
-                                    print(f"Successfully deleted order ticket {ticket}")
-                                else:
-                                    print(f"Failed to delete order ticket {ticket}")
-                            except Exception as e:
-                                print(f"Error deleting order ticket {ticket}: {e}")
-                    else:
-                        print(f"No pending orders found for {self.symbol}.")
-                except Exception as e:
-                    print(f"Error querying or deleting pending orders: {e}")
-            else:
-                print("No MT5 executor available to cancel orders.")
-
-            if self.log and len(self.t) > 0:
-                self._log_row(
-                    bar_time=self.t[-1],
-                    pending_order=pending_order,
-                    open_position=open_position,
-                    in_restricted_hours=in_restricted_hours,
-                    action_taken="pending_cancelled",
-                )
 
         return orders

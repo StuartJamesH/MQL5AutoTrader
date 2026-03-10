@@ -130,6 +130,7 @@ class MT5LiveExecutionHandler:
         request = {
             "action": action,
             "symbol": symbol,
+            "side": side,
             "volume": float(qty),
             "type": order_type,
             "deviation": self.deviation,
@@ -525,3 +526,79 @@ class MT5LiveExecutionHandler:
                 # Not in fills or positions — broker cancelled it
                 self.ticket_book.record_cancellation(ticket, reason="broker_cancelled")
                 _LOG.info("Broker cancellation recorded: ticket=%d", ticket)
+        
+    def process_position_updates_batch(self, current_time: Optional[datetime] = None) -> None:
+        """Process updates for currently open positions.
+
+        Should be called once per bar after all new orders for that bar have been
+        submitted to MT5.  For every currently open position, checks if it has
+        been closed since the previous update (i.e. by an independent market
+        order or by an attached stop-loss / take-profit) and records any
+        detected closure in the TicketBook.
+
+        Parameters
+        ----------
+        current_time : datetime, optional
+            Timestamp used for update evaluation.  Passing the bar-close time
+            ensures consistent behaviour in both live and replay modes.
+            Defaults to ``datetime.utcnow()`` when omitted.
+        """
+        if self.ticket_book is None:
+            return
+
+        if current_time is None:
+            current_time = datetime.utcnow()
+
+        for record in list(self.ticket_book.get_open_positions()):
+            ticket = record.ticket
+            try:
+                # Check whether this specific position is still open in MT5.
+                # Using ticket= is more precise than symbol= and works correctly
+                # on both netting and hedging accounts.
+                positions = mt5.positions_get(ticket=ticket)
+                if positions:
+                    continue  # position still open, nothing to do
+
+                # Position is gone — search deal history for the closing deal.
+                # MT5 represents a close as a deal with DEAL_ENTRY_OUT whose
+                # position_id matches the original fill ticket.
+                now = datetime.utcnow()
+                deals = mt5.history_deals_get(now - timedelta(days=7), now)
+
+                close_price = 0.0
+                close_pnl = 0.0
+                close_swap = 0.0
+                close_time_dt = current_time
+
+                if deals:
+                    for deal in deals:
+                        if (
+                            getattr(deal, "position_id", None) == ticket
+                            and getattr(deal, "entry", None) == mt5.DEAL_ENTRY_OUT
+                        ):
+                            close_price = float(getattr(deal, "price", 0.0))
+                            close_pnl = float(getattr(deal, "profit", 0.0))
+                            close_swap = float(getattr(deal, "swap", 0.0))
+                            deal_ts = getattr(deal, "time", None)
+                            if deal_ts:
+                                close_time_dt = datetime.utcfromtimestamp(deal_ts)
+                            break
+                    else:
+                        _LOG.warning(
+                            "No closing deal found in history for ticket=%d — recording closure with zero values",
+                            ticket,
+                        )
+
+                self.ticket_book.record_close(
+                    ticket=ticket,
+                    close_price=close_price,
+                    close_time=close_time_dt,
+                    pnl=close_pnl,
+                    swap=close_swap,
+                )
+                _LOG.info(
+                    "Position closure recorded: ticket=%d symbol=%s side=%s close_price=%.5f pnl=%.2f swap=%.2f",
+                    ticket, record.symbol, record.side, close_price, close_pnl, close_swap,
+                )
+            except Exception as e:
+                _LOG.warning("Error checking position closure for ticket=%d: %s", ticket, e)

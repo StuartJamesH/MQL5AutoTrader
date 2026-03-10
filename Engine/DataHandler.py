@@ -260,7 +260,7 @@ class MT5DataHandler:
 
         if rates is None or len(rates) == 0:
             # fall back to copy_rates_from if range returned empty
-            count = self.max_bars or 7000
+            count = self.max_bars or 10_000
             rates = mt5.copy_rates_from(self.symbol, self.mt5_timeframe, end_dt, count)
 
         if rates is None or len(rates) == 0:

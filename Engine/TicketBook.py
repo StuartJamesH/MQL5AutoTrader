@@ -437,7 +437,27 @@ class TicketBook:
             if record and record.status == OrderStatus.FILLED.value:
                 return True
         return False
-    
+
+    def get_open_positions(self, symbol: Optional[str] = None) -> List[TicketRecord]:
+        """Return all records that represent open positions (status ``FILLED``).
+
+        Parameters
+        ----------
+        symbol : str, optional
+            When provided, only positions for this ticker are returned.
+
+        Returns
+        -------
+        list[TicketRecord]
+        """
+        result = [
+            record for record in self._tickets.values()
+            if record.status == OrderStatus.FILLED.value
+        ]
+        if symbol is not None:
+            result = [r for r in result if r.symbol == symbol]
+        return result
+
     def get_order_history(
         self,
         symbol: Optional[str] = None,

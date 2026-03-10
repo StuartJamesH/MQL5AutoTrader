@@ -72,4 +72,6 @@ class Live_Engine:
             # After all orders for this bar have been submitted, run the
             # per-bar lifecycle batch: expire stale pending orders and detect
             # any fills that materialised since the previous bar.
-            self.executor.process_pending_batch(_bar_time_as_utc(bar))
+            bar_time = _bar_time_as_utc(bar)
+            self.executor.process_pending_batch(bar_time)
+            self.executor.process_position_updates_batch(bar_time)

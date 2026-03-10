@@ -1,12 +1,14 @@
 """
-run_binary.py — Template launcher for TripleBarrierHiLowBinary.
+run_multiclass.py — Launcher for TripleBarrierHiLowMulticlass.
+
+Uses a single 3-class model (SELL / FLAT / BUY) to generate trade signals.
+A trade is only placed when the model's predicted class is SELL or BUY and its
+softmax probability meets or exceeds TRADE_THRESHOLD.
 
 Usage:
-    python Engine/run_binary.py
+    python Engine/run_multiclass.py
 
-To create a new strategy instance, copy this file and replace all values
-marked with # <-- REPLACE with your own.  All tuneable parameters are
-declared explicitly at the top of the __main__ block.
+Replace every value marked with # <-- REPLACE before running.
 """
 import logging
 import os
@@ -20,7 +22,7 @@ from Engine import Live_Engine
 from DataHandler import MT5DataHandler
 from Executor import MT5LiveExecutionHandler
 from TicketBook import TicketBook
-from StrategyBinary import TripleBarrierHiLowBinary
+from StrategyMulticlass import TripleBarrierHiLowMulticlass
 
 
 # ---------------------------------------------------------------------------
@@ -84,35 +86,34 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------
     # DATA SOURCE
     # -----------------------------------------------------------------------
-    SYMBOL      = "EURUSD.a"        # <-- MT5 symbol name
-    TIMEFRAME   = "1min"            # <-- '1min' | '5min' | '15min' | '1h'
-    MT5_MODE    = "live"            # <-- 'live' | 'replay'
-    REPLAY_START = "2025-01-01"     # Only used when MT5_MODE = 'replay'
+    SYMBOL       = "US500.a"        # <-- MT5 symbol name
+    TIMEFRAME    = "1min"           # <-- '1min' | '5min' | '15min' | '1h'
+    MAXBARS      = 7_000            # <-- max bars to keep in memory (oldest are dropped first)
+    MT5_MODE     = "live"           # <-- 'live' | 'replay'
+    REPLAY_START = "2026-01-01"     # Only used when MT5_MODE = 'replay'
 
     # -----------------------------------------------------------------------
-    # MODEL PACKS
+    # MODEL PACK
     # -----------------------------------------------------------------------
-    BUY_PACK_PATH  = "placeholder"  # <-- e.g. "Engine/Model Packs/EURUSD_BUY.pkl"
-    SELL_PACK_PATH = "placeholder"  # <-- e.g. "Engine/Model Packs/EURUSD_SELL.pkl"
+    MODEL_PACK_PATH = "Engine/Model Packs/US500_1minute_TCN_Multiclass_256seq_20260309_fastma_very_selective_model.pkl"  # <-- e.g. "Engine/Model Packs/US500_multiclass.pkl"
 
     # -----------------------------------------------------------------------
     # STRATEGY PARAMETERS
     # -----------------------------------------------------------------------
-    PATIENCE       = 1              # <-- bars before an unfilled stop order expires
-    RISK           = 20.0           # <-- fixed-risk amount per trade in account currency
-    MAXPOS         = 1.5            # <-- maximum position size cap in lots
-    BUY_THRESHOLD  = 0.5            # <-- minimum buy-model probability to enter long
-    SELL_THRESHOLD = 0.5            # <-- minimum sell-model probability to enter short
-    EMA1_PERIOD    = 8              # <-- fast EMA period (reserved for future filter use)
-    EMA2_PERIOD    = 30             # <-- slow EMA period (reserved for future filter use)
-    DEBUG          = False          # <-- True for verbose per-bar output
-    LOG_TRADES     = True           # <-- False to disable CSV trade logging
+    PATIENCE         = 1            # <-- bars before an unfilled stop order expires
+    RISK             = 20.0         # <-- fixed-risk amount per trade in account currency
+    MAXPOS           = 5            # <-- maximum position size cap in lots
+    TRADE_THRESHOLD  = 0.5          # <-- minimum class probability required to trade
+    EMA1_PERIOD      = 8            # <-- fast EMA period (reserved for future filter use)
+    EMA2_PERIOD      = 30           # <-- slow EMA period (reserved for future filter use)
+    DEBUG            = True        # <-- True for verbose per-bar output
+    LOG_TRADES       = True         # <-- False to disable CSV trade logging
 
     # -----------------------------------------------------------------------
     # EXECUTION
     # -----------------------------------------------------------------------
-    DEVIATION   = 10                # <-- max price deviation in points for market orders
-    MAGIC       = 234000            # <-- EA magic number — must be unique per running instance
+    DEVIATION = 10                  # <-- max price deviation in points for market orders
+    MAGIC     = 235000              # <-- EA magic number — must be unique per running instance
 
     # -----------------------------------------------------------------------
     # TICKETBOOK (order journal + state store)
@@ -122,27 +123,23 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------
     # Build components
     # -----------------------------------------------------------------------
-    _LOG.info("Loading model packs...")
-    buy_pack  = _load_model_pack(BUY_PACK_PATH)
-    sell_pack = _load_model_pack(SELL_PACK_PATH)
-    buy_model  = _build_model(buy_pack)
-    sell_model = _build_model(sell_pack)
-    _LOG.info("Model packs loaded.")
+    _LOG.info("Loading model pack...")
+    model_pack = _load_model_pack(MODEL_PACK_PATH)
+    model = _build_model(model_pack)
+    _LOG.info("Model pack loaded.")
 
     ticket_book = TicketBook(db_path=DB_PATH)
-    data        = MT5DataHandler(symbol=SYMBOL, timeframe=TIMEFRAME, mode=MT5_MODE, start=REPLAY_START)
+    data        = MT5DataHandler(symbol=SYMBOL, timeframe=TIMEFRAME, mode=MT5_MODE, start=REPLAY_START, max_bars=MAXBARS)
     executor    = MT5LiveExecutionHandler(deviation=DEVIATION, magic=MAGIC, ticket_book=ticket_book)
-    strategy    = TripleBarrierHiLowBinary(
+    strategy    = TripleBarrierHiLowMulticlass(
         symbol=SYMBOL,
-        buy_model=buy_model,
-        buy_model_pack=buy_pack,
-        sell_model=sell_model,
-        sell_model_pack=sell_pack,
+        model=model,
+        model_pack=model_pack,
         patience=PATIENCE,
+        maxlen=MAXBARS,
         risk=RISK,
         maxpos=MAXPOS,
-        buy_threshold=BUY_THRESHOLD,
-        sell_threshold=SELL_THRESHOLD,
+        trade_threshold=TRADE_THRESHOLD,
         ema1_period=EMA1_PERIOD,
         ema2_period=EMA2_PERIOD,
         mt5_executor=executor,
