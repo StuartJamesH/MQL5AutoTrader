@@ -1,0 +1,39 @@
+{
+  "_comment": "Model architecture profiles for TCNAttentionSEClassifier. Select with --model-profile. 'input_dim' is always set automatically at runtime from the feature count — do not add it here.",
+
+  "default": {
+    "_comment": "Full-size model. Receptive field: (3-1) × (2^6 - 1) × 2 + 1 = 253 bars. Matches SEQ_LEN=128.",
+    "hidden_channels": 128,
+    "num_layers":       6,
+    "kernel_size":      3,
+    "num_classes":      2,
+    "dropout":          0.25,
+    "dropout_out":      0.35,
+    "attn_heads":       4,
+    "attn_dropout":     0.1
+  },
+
+  "small": {
+    "_comment": "Faster to train / debug. Receptive field: (3-1) × (2^4 - 1) × 2 + 1 = 61 bars.",
+    "hidden_channels": 64,
+    "num_layers":       4,
+    "kernel_size":      3,
+    "num_classes":      2,
+    "dropout":          0.2,
+    "dropout_out":      0.3,
+    "attn_heads":       2,
+    "attn_dropout":     0.1
+  },
+
+  "large": {
+    "_comment": "Deeper model for longer sequences (SEQ_LEN=256+). Receptive field ≈ 509 bars.",
+    "hidden_channels": 192,
+    "num_layers":       8,
+    "kernel_size":      3,
+    "num_classes":      2,
+    "dropout":          0.3,
+    "dropout_out":      0.4,
+    "attn_heads":       8,
+    "attn_dropout":     0.15
+  }
+}

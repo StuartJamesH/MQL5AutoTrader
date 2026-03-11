@@ -1,0 +1,42 @@
+{
+  "_comment": "Loss function profiles for BinaryTradeProfitabilityLoss. Select with --loss-profile. 'alpha' (class weights) is computed automatically from the training label distribution — do not add it here.",
+
+  "default": {
+    "_comment": "High-precision bias. Penalises false positives heavily via pr_weight and profit_weight.",
+    "gamma":          2.0,
+    "trade_class":    1,
+    "pr_weight":      15.0,
+    "rec_weight":     1.0,
+    "f1_weight":      1.0,
+    "profit_weight":  15.0,
+    "loss_penalty":   5.0,
+    "direction_bonus": 0.0,
+    "eps":            1e-6
+  },
+
+  "balanced": {
+    "_comment": "Equal precision/recall weight. Good starting point for new instruments.",
+    "gamma":          2.0,
+    "trade_class":    1,
+    "pr_weight":      5.0,
+    "rec_weight":     5.0,
+    "f1_weight":      5.0,
+    "profit_weight":  10.0,
+    "loss_penalty":   3.0,
+    "direction_bonus": 0.0,
+    "eps":            1e-6
+  },
+
+  "high_recall": {
+    "_comment": "Catches more entries at the cost of lower precision. Useful if the label set is sparse.",
+    "gamma":          2.0,
+    "trade_class":    1,
+    "pr_weight":      3.0,
+    "rec_weight":     12.0,
+    "f1_weight":      3.0,
+    "profit_weight":  8.0,
+    "loss_penalty":   1.0,
+    "direction_bonus": 0.0,
+    "eps":            1e-6
+  }
+}
