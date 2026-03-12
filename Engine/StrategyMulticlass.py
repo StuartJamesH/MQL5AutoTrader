@@ -11,6 +11,7 @@ import torch
 import talib
 
 from DataHandler import Order
+from Learn.features import donchian_trend
 
 if TYPE_CHECKING:
     from TicketBook import TicketBook
@@ -37,9 +38,8 @@ class TripleBarrierHiLowMulticlass:
         patience: int,
         maxlen: int = 7_000,
         risk: float = 50.0,
-        ema1_period: int = 8,
-        ema2_period: int = 30,
         trade_threshold: float = 0.5,
+        donchian_length: int = 20,
         mt5_executor: Any = None,
         data_handler: Any = None,
         maxpos: float = 0.5,
@@ -56,6 +56,7 @@ class TripleBarrierHiLowMulticlass:
         self.countdown = 0
         self.debug = debug
         self.trade_threshold = float(trade_threshold)
+        self.donchian_length = int(donchian_length)
 
         # --- Price buffers ---
         # 10,000 bars (~7 days of M1) ensures MTF indicators have stabilised.
@@ -75,8 +76,6 @@ class TripleBarrierHiLowMulticlass:
         self.take = 0.0
 
         self.risk = risk
-        self.ema1_period = ema1_period
-        self.ema2_period = ema2_period
 
         # --- Model + preprocessing ---
         self.model = model
@@ -213,14 +212,6 @@ class TripleBarrierHiLowMulticlass:
     # Helpers
     # ------------------------------------------------------------------
 
-    def get_moving_averages(self) -> Tuple[Optional[float], Optional[float]]:
-        if len(self.t) == self.maxlen:
-            c = pd.Series(list(self.c))
-            ema1 = c.ewm(span=self.ema1_period, adjust=False).mean().iloc[-1]
-            ema2 = c.ewm(span=self.ema2_period, adjust=False).mean().iloc[-1]
-            return float(ema1), float(ema2)
-        return None, None
-
     def check_pending_orders(self) -> bool:
         """Return True if there is an active pending order for this symbol."""
         if self.ticket_book is not None:
@@ -338,6 +329,10 @@ class TripleBarrierHiLowMulticlass:
 
         pred, prob_sell, prob_flat, prob_buy, clean_rows = self._run_model(df)
 
+        # Donchian trend gate: +1 = uptrend, -1 = downtrend, 0 = neutral
+        don_series = donchian_trend(df, length=self.donchian_length)
+        don = int(don_series.iloc[-1])
+
         # Map prediction class to trading signal, gated by threshold
         if pred == 2 and prob_buy >= self.trade_threshold:
             signal = 1
@@ -346,10 +341,16 @@ class TripleBarrierHiLowMulticlass:
         else:
             signal = 0
 
+        # Donchian gate: BUY only in uptrend, SELL only in downtrend
+        if signal == 1 and don <= 0:
+            signal = 0
+        elif signal == -1 and don >= 0:
+            signal = 0
+
         if self.debug:
             print("\n[[DEBUG PREDICTION - MULTICLASS]]")
             print(f"   pred={pred}  prob_sell={prob_sell:.3f}  prob_flat={prob_flat:.3f}  prob_buy={prob_buy:.3f}")
-            print(f"   trade_threshold={self.trade_threshold}  final signal={signal}")
+            print(f"   donchian_trend={don}  trade_threshold={self.trade_threshold}  final signal={signal}")
 
         # Compute Hi/Low stop-order entry, stop, take
         if signal == 1:
@@ -383,6 +384,7 @@ class TripleBarrierHiLowMulticlass:
             "take": round(take, 5) if take else 0.0,
             "position_size": round(position_size, 2),
             "atr_pips": round(atr * 100_000, 2) if atr else 0.0,
+            "donchian_trend": don,
             "buffer_len": len(self.t),
             "clean_rows": clean_rows,
         }
@@ -414,10 +416,10 @@ class TripleBarrierHiLowMulticlass:
         if self.countdown > 0:
             self.countdown -= 1
 
-        # Restricted trading hours — skip new signals between 8:30 and 11:00 local time
+        # Restricted trading hours — skip new signals between 7:30 and 10:00 local time
         current_time = datetime.datetime.now().time()
-        restricted_start = datetime.time(8, 30)
-        restricted_end = datetime.time(11, 0)
+        restricted_start = datetime.time(7, 30)
+        restricted_end = datetime.time(10, 0)
         in_restricted_hours = restricted_start <= current_time <= restricted_end
 
         if self.debug:
@@ -443,9 +445,6 @@ class TripleBarrierHiLowMulticlass:
         if self.debug:
             print(f"make_prediction() returned signal={self.signal}, side={self.side}, "
                     f"entry={self.entry}, stop={self.stop}, take={self.take}, size={self.position_size}")
-
-        # ema1, ema2 = self.get_moving_averages()
-        # _ = (ema1, ema2)  # reserved for optional EMA filter
 
         if self.signal == 1:
             self.countdown = self.patience
