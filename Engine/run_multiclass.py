@@ -95,17 +95,16 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------
     # MODEL PACK
     # -----------------------------------------------------------------------
-    MODEL_PACK_PATH = "Engine/Model Packs/US500_1minute_TCN_Multiclass_256seq_20260309_fastma_very_selective_model.pkl"  # <-- e.g. "Engine/Model Packs/US500_multiclass.pkl"
+    MODEL_PACK_PATH = "Engine/Model Packs/US500_1minute_TCN_Multiclass_256seq_20260310_fastma_very_selective_model.pkl"  # <-- e.g. "Engine/Model Packs/US500_multiclass.pkl"
 
     # -----------------------------------------------------------------------
     # STRATEGY PARAMETERS
     # -----------------------------------------------------------------------
-    PATIENCE         = 1            # <-- bars before an unfilled stop order expires
-    RISK             = 20.0         # <-- fixed-risk amount per trade in account currency
-    MAXPOS           = 5            # <-- maximum position size cap in lots
-    TRADE_THRESHOLD  = 0.5          # <-- minimum class probability required to trade
-    EMA1_PERIOD      = 8            # <-- fast EMA period (reserved for future filter use)
-    EMA2_PERIOD      = 30           # <-- slow EMA period (reserved for future filter use)
+    PATIENCE          = 1            # <-- bars before an unfilled stop order expires
+    RISK              = 20.0         # <-- fixed-risk amount per trade in account currency
+    MAXPOS            = 5            # <-- maximum position size cap in lots
+    TRADE_THRESHOLD   = 0.6          # <-- minimum class probability required to trade
+    DONCHIAN_LENGTH   = 60           # <-- Donchian channel look-back for trend gate
     DEBUG            = True        # <-- True for verbose per-bar output
     LOG_TRADES       = True         # <-- False to disable CSV trade logging
 
@@ -140,8 +139,7 @@ if __name__ == "__main__":
         risk=RISK,
         maxpos=MAXPOS,
         trade_threshold=TRADE_THRESHOLD,
-        ema1_period=EMA1_PERIOD,
-        ema2_period=EMA2_PERIOD,
+        donchian_length=DONCHIAN_LENGTH,
         mt5_executor=executor,
         data_handler=data,
         debug=DEBUG,
