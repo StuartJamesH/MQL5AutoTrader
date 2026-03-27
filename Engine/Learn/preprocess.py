@@ -59,8 +59,19 @@ def preprocess_ohlcv(
             df[c] = (df[c] - df['Close']) / df['Close']
 
     # Base features that we want scaled (except constant C_rel)
-    base_features_scale = ['log_return','O_rel','H_rel','L_rel']
-
+    legacy_base = ['log_return','O_rel','H_rel','L_rel']
+    new_base = ['fl_log_return','fl_O_rel','fl_H_rel','fl_L_rel']
+    
+    # Check if df contains legacy or new base features, and use the ones that exist
+    if all(f in df.columns for f in legacy_base):
+        base_features_scale = legacy_base
+    elif all(f in df.columns for f in new_base):
+        base_features_scale = new_base
+    else:
+        # If neither set is fully present, default to an empty list (no scaling) and log a warning
+        print("Warning: Neither legacy nor new base features found. No features will be scaled.")
+        base_features_scale = []
+    
     # Dynamically detect binary/ternary flags that should NOT be scaled
     # Treat columns with only {0,1} or {-1,0,1} as categorical pass-through
     def _is_binary_or_ternary(col):
@@ -101,7 +112,7 @@ def preprocess_ohlcv(
     normalized_passthrough = [c for c in df.columns if _is_normalized_feature(c)]
 
     # Exclude non-feature columns and constant columns from scaling group
-    exclude = set(['Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'Pivot', 'target', 'vol', 'outcomes', 'C_rel', 'sell_y', 'buy_y'])
+    exclude = set(['Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'Pivot', 'target', 'vol', 'outcomes', 'C_rel'])
 
     # Also exclude any provided label/outcome columns from ALL feature groups
     label_exclude = set(['Pivot','target', 'sell_y', 'buy_y'])
