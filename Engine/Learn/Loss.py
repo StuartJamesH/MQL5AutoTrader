@@ -3,151 +3,111 @@ from torch import nn
 import torch.nn.functional as F
 
 class TradeProfitabilityLoss(nn.Module):
-    """Enhanced loss that optimizes for trade profitability in addition to precision/recall.
-    
-    This loss function encourages the model to predict trades that will be profitable,
-    even if the exact signal direction might not match the label perfectly.
-    
-    Key features:
-    - Rewards predictions that lead to profitable trades (even with wrong signal)
-    - Penalizes predictions that lead to unprofitable trades
-    - Maintains precision/recall optimization for overall accuracy
-    - Uses triple barrier outcomes (TP/SL) to compute profitability
-    
-    Usage:
-        You need to pass `trade_outcomes` as an additional argument during training.
-        trade_outcomes should be a tensor where:
-            1 = Trade hit Take Profit (profitable)
-            0 = Trade hit timeout/vertical barrier (neutral)
-           -1 = Trade hit Stop Loss (unprofitable)
-           -2 = No trade signal (FLAT samples)
+    """Directional precision-optimised loss for multiclass trade entry classification.
+
+    Designed for 3-class (SELL=0 / FLAT=1 / BUY=2) trade entry models where
+    high-precision trade predictions are the primary objective, with a hard
+    floor on per-class recall to prevent minority-class collapse.
+
+    Three structural improvements over the previous implementation:
+
+    1. **Per-class precision** (SELL and BUY measured independently).
+       The old combined p_sell+p_buy formulation treated a BUY prediction on a
+       SELL bar as a soft true-positive — rewarding the wrong direction as
+       precision.  Each class is now measured against its own denominator.
+
+    2. **Recall floor hinge** (replaces linear recall penalty).
+       A linear recall penalty constantly opposes precision.  The hinge is zero
+       when recall >= recall_floor and increases quadratically only below it.
+       This prevents minority-class collapse without competing with precision.
+
+    3. **Direction confusion penalty**.
+       Explicitly penalises the model when it concentrates probability mass in
+       the wrong trade direction (BUY mass on SELL bars, or SELL mass on BUY bars).
+
+    Forward signature is identical to the previous class:
+        loss = criterion(logits, targets, trade_outcomes)
+    ``trade_outcomes`` is accepted but unused so the training loop requires no
+    changes.
     """
-    
-    def __init__(self,
-                 alpha=None,
-                 gamma: float = 2.0,
-                 trade_classes=(0, 2),
-                 pr_weight: float = 8.0,
-                 rec_weight: float = 8.0,
-                 f1_weight: float = 0.0,
-                 profit_weight: float = 5.0,
-                 loss_penalty: float = 3.0,
-                 direction_bonus: float = 1.0,
-                 eps: float = 1e-6):
+
+    def __init__(
+        self,
+        alpha=None,
+        gamma: float = 2.5,
+        trade_classes=(0, 2),
+        pr_weight: float = 10.0,
+        recall_floor: float = 0.15,
+        rec_floor_weight: float = 20.0,
+        direction_penalty: float = 1.5,
+        eps: float = 1e-6,
+    ):
         """
         Args:
-            alpha: Class weights for focal loss
-            gamma: Focal loss gamma parameter
-            trade_classes: Which class indices represent trades (default: 0=Short, 2=Long)
-            pr_weight: Weight for precision penalty
-            rec_weight: Weight for recall penalty
-            f1_weight: Weight for F1 penalty
-            profit_weight: Weight for profitability reward (encourage profitable predictions)
-            loss_penalty: Additional penalty for predicting trades that hit SL
-            direction_bonus: Bonus when prediction matches both outcome AND direction
-            eps: Small constant for numerical stability
+            alpha:             Class weights tensor for focal CE [SELL, FLAT, BUY].
+            gamma:             Focal loss exponent. Higher = more focus on hard examples.
+            trade_classes:     (sell_idx, buy_idx) — indices of the two trade classes.
+            pr_weight:         Weight on the mean per-class precision penalty.
+                               Primary knob for driving precision up.
+            recall_floor:      Minimum acceptable recall for each trade class before
+                               the hinge penalty activates. Default 0.15 prevents
+                               collapse without fighting precision above the floor.
+            rec_floor_weight:  Strength of the quadratic recall floor hinge.
+                               Increase (e.g. to 30–40) if a class still collapses.
+            direction_penalty: Weight on the SELL↔BUY direction confusion penalty.
+            eps:               Numerical stability constant.
         """
         super().__init__()
         self.alpha = alpha
-        self.gamma = gamma
-        self.trade_classes = tuple(trade_classes)
-        self.pr_weight = float(pr_weight)
-        self.rec_weight = float(rec_weight)
-        self.f1_weight = float(f1_weight)
-        self.profit_weight = float(profit_weight)
-        self.loss_penalty = float(loss_penalty)
-        self.direction_bonus = float(direction_bonus)
+        self.gamma = float(gamma)
+        self.sell_cls = int(trade_classes[0])
+        self.buy_cls  = int(trade_classes[1])
+        self.pr_weight        = float(pr_weight)
+        self.recall_floor     = float(recall_floor)
+        self.rec_floor_weight = float(rec_floor_weight)
+        self.direction_penalty = float(direction_penalty)
         self.eps = float(eps)
 
-    def forward(self, logits, targets, trade_outcomes=None):
-        """
-        Args:
-            logits:         Model predictions (batch_size, num_classes)
-            targets:        True labels (batch_size,)
-            trade_outcomes: Trade profitability outcomes (batch_size, 2)
-                Column 0: sell/short outcomes  (aligned with trade_classes[0])
-                Column 1: buy/long  outcomes   (aligned with trade_classes[1])
-                Values: 1 = TP hit, 0 = timeout, -1 = SL hit.
-                TP values may be multiplied (e.g. ×2) before passing in to
-                increase the reward signal; max_outcome normalises accordingly.
-        """
-        # --- Base Focal Loss ---
-        ce = F.cross_entropy(logits, targets, weight=self.alpha, reduction='none')
+    def forward(self, logits, targets, trade_outcomes=None):  # trade_outcomes unused; kept for API parity
         probs = torch.softmax(logits, dim=1)
-        pt = probs[torch.arange(len(targets)), targets]
+
+        # ── 1. Focal cross-entropy ────────────────────────────────────────────
+        ce    = F.cross_entropy(logits, targets, weight=self.alpha, reduction='none')
+        pt    = probs[torch.arange(len(targets)), targets]
         focal = ((1.0 - pt) ** self.gamma) * ce
         mean_focal = focal.mean()
 
-        # --- Precision/Recall Optimization ---
-        trade_idx = list(self.trade_classes)
-        p_pos = probs[:, trade_idx].sum(dim=1)
+        p_sell    = probs[:, self.sell_cls]          # (B,)
+        p_buy     = probs[:, self.buy_cls]           # (B,)
+        true_sell = (targets == self.sell_cls).float()
+        true_buy  = (targets == self.buy_cls).float()
 
-        tp_mask = torch.zeros_like(p_pos, dtype=torch.bool)
-        for c in trade_idx:
-            tp_mask = tp_mask | (targets == c)
-        tn_mask = ~tp_mask
+        # ── 2. Per-class soft precision (SELL and BUY independently) ─────────
+        # prec_c = sum(p_c on true-c bars) / sum(p_c on all bars)
+        # Gradients push two things simultaneously: raise p_c on true-c bars,
+        # and lower p_c on non-c bars.
+        prec_sell = (p_sell * true_sell).sum() / (p_sell.sum() + self.eps)
+        prec_buy  = (p_buy  * true_buy ).sum() / (p_buy.sum()  + self.eps)
+        precision_loss = self.pr_weight * ((1.0 - prec_sell) + (1.0 - prec_buy)) / 2.0
 
-        TP = (p_pos * tp_mask.float()).sum()
-        FP = (p_pos * tn_mask.float()).sum()
-        FN = ((1.0 - p_pos) * tp_mask.float()).sum()
+        # ── 3. Recall floor hinge (quadratic below floor, zero above) ────────
+        # rec_c = sum(p_c on true-c bars) / count(true-c bars)
+        rec_sell = (p_sell * true_sell).sum() / (true_sell.sum() + self.eps)
+        rec_buy  = (p_buy  * true_buy ).sum() / (true_buy.sum()  + self.eps)
+        hinge_sell = F.relu(self.recall_floor - rec_sell) ** 2
+        hinge_buy  = F.relu(self.recall_floor - rec_buy)  ** 2
+        recall_loss = self.rec_floor_weight * (hinge_sell + hinge_buy)
 
-        precision = TP / (TP + FP + self.eps)
-        recall    = TP / (TP + FN + self.eps)
+        # ── 4. Direction confusion penalty ────────────────────────────────────
+        # Penalise placing BUY mass on true-SELL bars and SELL mass on true-BUY bars.
+        n_trade = true_sell.sum() + true_buy.sum() + self.eps
+        confusion = (
+            (p_buy  * true_sell).sum() +   # BUY mass on SELL bars
+            (p_sell * true_buy ).sum()      # SELL mass on BUY bars
+        ) / n_trade
+        confusion_loss = self.direction_penalty * confusion
 
-        total_pr_rec = self.pr_weight * (1.0 - precision) + self.rec_weight * (1.0 - recall)
-
-        if self.f1_weight and (self.f1_weight > 0.0):
-            f1 = 2.0 * precision * recall / (precision + recall + self.eps)
-            total_pr_rec = total_pr_rec + self.f1_weight * (1.0 - f1)
-
-        # --- Profitability Optimization (soft expected-profit — fully differentiable) ---
-        # Rather than selecting a single hard-argmax prediction, we compute the
-        # *expected profit* for each sample by weighting each trade class's outcome
-        # by its predicted probability.  Gradients flow to all class probabilities
-        # simultaneously, giving the optimiser a richer signal on every step.
-        profit_penalty = 0.0
-
-        if trade_outcomes is not None:
-            if not isinstance(trade_outcomes, torch.Tensor):
-                trade_outcomes = torch.tensor(trade_outcomes, dtype=torch.float32, device=logits.device)
-
-            sell_cls, buy_cls = self.trade_classes[0], self.trade_classes[1]
-            p_sell = probs[:, sell_cls]   # (B,)
-            p_buy  = probs[:, buy_cls]    # (B,)
-            sell_out = trade_outcomes[:, 0]   # (B,)
-            buy_out  = trade_outcomes[:, 1]   # (B,)
-
-            # Soft expected profit per sample (signed; range ≈ [-2, 2] with doubled TP)
-            expected = p_sell * sell_out + p_buy * buy_out   # (B,)
-
-            # Normalise by the doubled-TP upper bound so scores stay in [0, 1]
-            max_outcome = 2.0
-            profit_score = expected.clamp(min=0).mean() / max_outcome   # [0, 1]
-            loss_score   = (-expected).clamp(min=0).mean() / max_outcome  # [0, 1]
-
-            profit_penalty = (
-                self.profit_weight * (1.0 - profit_score) +
-                self.loss_penalty  * loss_score
-            )
-
-            # Direction bonus: reward high P(correct trade class) on profitable bars.
-            # On bars where a sell trade is profitable, we want p_sell to be high;
-            # on bars where a buy trade is profitable, we want p_buy to be high.
-            if self.direction_bonus > 0.0:
-                bonus_scores = []
-                sell_profitable = sell_out > 0
-                buy_profitable  = buy_out  > 0
-                if sell_profitable.any():
-                    bonus_scores.append(p_sell[sell_profitable].mean())
-                if buy_profitable.any():
-                    bonus_scores.append(p_buy[buy_profitable].mean())
-                if bonus_scores:
-                    dir_score = torch.stack(bonus_scores).mean()
-                    profit_penalty = profit_penalty + self.direction_bonus * (1.0 - dir_score)
-
-        # --- Combine all losses ---
-        loss = mean_focal + total_pr_rec + profit_penalty
-        return loss
+        return mean_focal + precision_loss + recall_loss + confusion_loss
 
 
 class BinaryTradeProfitabilityLoss(nn.Module):
