@@ -19,7 +19,7 @@ from Learn.features import _add_features_US500
 from Learn.labels import causal_triple_barrier_hilow_trend_labeler, calculate_trade_outcomes_all_candles
 from Learn.preprocess import preprocess_ohlcv
 from Learn.Loaders import SequenceDataset
-from Learn.Models import LSTMAttentionSEClassifier
+from Learn.Models import LSTMAttentionSEClassifier, TCNAttentionSEClassifier
 from Learn.Loss import TradeProfitabilityLoss
 
 
@@ -44,8 +44,8 @@ ROLLOVER_WINDOW = ("21:30", "22:00")
 TRADING_HOURS = None
 COMMISSION = 0.10
 
+MODEL_ARCH    = "LSTM"   # "LSTM" | "TCN"
 MODEL_VERSION = "prod"
-MODEL_TYPE = "LSTM_Multiclass"
 OUTPUT_DIR = Path("Engine/Model Packs")
 LOG_FILE = Path("Engine/train_multiclass_prod.log")
 
@@ -77,7 +77,7 @@ outcome_params = {
 }
 outcome_params["max_horizon"] = 1000
 
-model_params = {
+lstm_model_params = {
     "input_dim": None,
     "hidden_dim": 512,
     "num_layers": 4,
@@ -91,16 +91,30 @@ model_params = {
     "bias_init": None,
 }
 
+# TCN: kernel_size=3, num_layers=6 → receptive field ≈ 253 bars (matches SEQ_LEN=256)
+tcn_model_params = {
+    "input_dim": None,
+    "hidden_channels": 256,
+    "num_layers": 6,
+    "kernel_size": 3,
+    "num_classes": 3,
+    "dropout": 0.20,
+    "dropout_out": 0.40,
+    "attn_heads": 8,
+    "attn_dropout": 0.10,
+    "use_learned_query": True,
+    "se_context_window": 32,
+    "bias_init": None,
+}
+
 loss_params_template = {
     "alpha": None,
     "gamma": 2.5,
     "trade_classes": (0, 2),
     "pr_weight": 10.0,
-    "rec_weight": 4.0,
-    "f1_weight": 2.0,
-    "profit_weight": 0.0,
-    "loss_penalty": 2.0,
-    "direction_bonus": 0.40,
+    "recall_floor": 0.10,      # hinge activates below 10% recall — matches production goal
+    "rec_floor_weight": 20.0,  # quadratic hinge strength
+    "direction_penalty": 1.5,  # SELL↔BUY confusion penalty
     "eps": 1e-6,
 }
 
@@ -406,15 +420,28 @@ def main() -> None:
     p_buy = float((y_train_arr == 2).mean())
     bias_init = [math.log(p_sell + 1e-8), math.log(p_flat + 1e-8), math.log(p_buy + 1e-8)]
 
-    model_params_local = dict(model_params)
+    _MODEL_REGISTRY = {
+        "LSTM": (LSTMAttentionSEClassifier, lstm_model_params),
+        "TCN":  (TCNAttentionSEClassifier,  tcn_model_params),
+    }
+    if MODEL_ARCH not in _MODEL_REGISTRY:
+        raise ValueError(f"Unknown MODEL_ARCH {MODEL_ARCH!r}. Choose 'LSTM' or 'TCN'.")
+    model_cls, base_params = _MODEL_REGISTRY[MODEL_ARCH]
+    model_type = f"{MODEL_ARCH}_Multiclass"
+
+    model_params_local = dict(base_params)
     model_params_local["input_dim"] = int(data_pack["X_train"].shape[1])
     model_params_local["bias_init"] = bias_init
 
-    model = LSTMAttentionSEClassifier(**model_params_local).to(device)
+    model = model_cls(**model_params_local).to(device)
 
     counts = np.maximum(np.bincount(y_train_arr, minlength=3), 1)
     raw_weights = (len(y_train_arr) / (len(counts) * counts)).astype(float)
     weights = np.power(raw_weights, 0.6)
+    # Cap FLAT weight so it cannot exceed the mean of the two trade-class weights.
+    # pr_weight in TradeProfitabilityLoss already drives trade selectivity; allowing
+    # a large FLAT weight in focal CE compounds that and suppresses minority gradients.
+    weights[1] = min(weights[1], (weights[0] + weights[2]) / 2.0)
     weights = weights / weights.mean()
     class_weights = torch.tensor(weights, dtype=torch.float32).to(device)
 
@@ -527,7 +554,7 @@ def main() -> None:
 
     today = pd.Timestamp.now().strftime("%Y%m%d")
     ds_title = Path(DS_NAME).name.split(".")[0]
-    model_name = "_".join([ds_title, MODEL_TYPE, f"{SEQ_LEN}seq", today, MODEL_VERSION])
+    model_name = "_".join([ds_title, model_type, f"{SEQ_LEN}seq", today, MODEL_VERSION])
 
     save_plots(model_name, history, final_eval)
 
@@ -535,7 +562,7 @@ def main() -> None:
         "dataset_name": ds_title,
         "dataset_dir": DS_NAME,
         "date_trained": today,
-        "model_type": MODEL_TYPE,
+        "model_type": model_type,
         "model_version": MODEL_VERSION,
         "task": "multiclass",
         "class_map": {0: "SELL", 1: "FLAT", 2: "BUY"},
@@ -553,8 +580,8 @@ def main() -> None:
         pickle.dump(
             {
                 "model": model.state_dict(),
-                "model_class": LSTMAttentionSEClassifier,
-                "model_class_source": inspect.getsource(LSTMAttentionSEClassifier),
+                "model_class": model_cls,
+                "model_class_source": inspect.getsource(model_cls),
                 "model_params": model_params_local,
                 "model_info": model_info,
                 "features": data_pack["features"],
