@@ -276,12 +276,14 @@ class LSTMAttentionSEClassifier(nn.Module):
         attn_heads: int = 4,
         attn_dropout: float = 0.1,
         use_learned_query: bool = True,
+        se_context_window: int = 32,
         bias_init=None,
     ):
         super().__init__()
 
-        self.bidirectional    = bidirectional
+        self.bidirectional     = bidirectional
         self.use_learned_query = use_learned_query
+        self.se_context_window = se_context_window
 
         self.lstm = nn.LSTM(
             input_dim,
@@ -327,8 +329,11 @@ class LSTMAttentionSEClassifier(nn.Module):
         h, (hn, _) = self.lstm(x)   # h: (B, S, lstm_out_dim)
         h = self.ln(h)
 
-        # Squeeze-Excite: gate each timestep using the global mean-pool context
-        context = h.mean(dim=1)                                               # (B, lstm_out_dim)
+        # Squeeze-Excite: gate timesteps using the most-recent bars as context.
+        # A full-sequence mean dilutes recent signal with historical noise; for
+        # short-horizon entries the last se_context_window bars are more predictive.
+        ctx_start = max(0, h.size(1) - self.se_context_window)
+        context = h[:, ctx_start:, :].mean(dim=1)                            # (B, lstm_out_dim)
         se = torch.sigmoid(self.se_expand(torch.relu(self.se_reduce(context))))
         h  = h * se.unsqueeze(1)
 
@@ -510,11 +515,13 @@ class TCNAttentionSEClassifier(nn.Module):
         attn_heads: int = 4,
         attn_dropout: float = 0.1,
         use_learned_query: bool = True,
+        se_context_window: int = 32,
         bias_init=None,
     ):
         super().__init__()
 
         self.use_learned_query = use_learned_query
+        self.se_context_window = se_context_window
         se_bottleneck = max(8, hidden_channels // 8)
 
         # Build TCN stack with exponentially increasing dilation
@@ -561,8 +568,11 @@ class TCNAttentionSEClassifier(nn.Module):
         h = self.tcn(x.transpose(1, 2)).transpose(1, 2)  # (B, S, hidden_channels)
         h = self.ln(h)
 
-        # Squeeze-Excite: gate timesteps using global mean context
-        context = h.mean(dim=1)
+        # Squeeze-Excite: gate timesteps using the most-recent bars as context.
+        # A full-sequence mean dilutes recent signal; for short-horizon entries
+        # the last se_context_window bars are more predictive.
+        ctx_start = max(0, h.size(1) - self.se_context_window)
+        context = h[:, ctx_start:, :].mean(dim=1)
         se = torch.sigmoid(self.se_expand(torch.relu(self.se_reduce(context))))
         h  = h * se.unsqueeze(1)
 
