@@ -1312,8 +1312,9 @@ def _add_features_EURUSD(df: pd.DataFrame, include_mtf: bool = False) -> pd.Data
     """
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', pd.errors.PerformanceWarning)
-        df = add_feature_library(df, include_mtf=include_mtf)
+        df = add_feature_library(df, include_mtf=include_mtf, regime_params=regime_params)
     df = df.copy()
+    
     _keep = [
         c for c in [
         'fl_z_60',
@@ -1448,6 +1449,7 @@ def _add_features_XAUUSD(df: pd.DataFrame, include_mtf: bool = False, regime_par
         warnings.simplefilter('ignore', pd.errors.PerformanceWarning)
         df = add_feature_library(df, include_mtf=include_mtf, regime_params=regime_params)
     df = df.copy()
+
     _keep = [
         c for c in [
         'fl_regime',
@@ -1585,6 +1587,7 @@ def _add_features_US500(df: pd.DataFrame, include_mtf: bool = False, regime_para
         warnings.simplefilter('ignore', pd.errors.PerformanceWarning)
         df = add_feature_library(df, include_mtf=include_mtf, regime_params=regime_params)
     df = df.copy()
+
     _keep = [
         c for c in [
         'fl_regime',

@@ -9,6 +9,7 @@ Public API
   add_multitimeframe_features — Higher-timeframe indicator overlay
 """
 
+import warnings
 import numpy as np
 import pandas as pd
 import talib
@@ -1309,7 +1310,11 @@ def _add_features_EURUSD(df: pd.DataFrame, include_mtf: bool = False) -> pd.Data
     fl_cdl_piercing, fl_rv_ratio_20_60, fl_parkinson_20, fl_H_rel, fl_volume_z,
     fl_cdl_hammer, fl_cdl_harami, fl_dow_cos
     """
-    df = add_feature_library(df, include_mtf=include_mtf)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', pd.errors.PerformanceWarning)
+        df = add_feature_library(df, include_mtf=include_mtf, regime_params=regime_params)
+    df = df.copy()
+    
     _keep = [
         c for c in [
         'fl_z_60',
@@ -1440,7 +1445,11 @@ def _add_features_XAUUSD(df: pd.DataFrame, include_mtf: bool = False, regime_par
     fl_ret_lag_3, fl_session_overlap, fl_yz_vol_20, fl_dow_cos, fl_squeeze,
     fl_cdl_3_white
     """
-    df = add_feature_library(df, include_mtf=include_mtf, regime_params=regime_params)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', pd.errors.PerformanceWarning)
+        df = add_feature_library(df, include_mtf=include_mtf, regime_params=regime_params)
+    df = df.copy()
+
     _keep = [
         c for c in [
         'fl_regime',
@@ -1574,7 +1583,11 @@ def _add_features_US500(df: pd.DataFrame, include_mtf: bool = False, regime_para
     fl_log_volume, fl_ret_lag_5, fl_cdl_morning_star, fl_nvi_z, fl_volume_z,
     fl_cdl_doji, fl_outside_bar
     """
-    df = add_feature_library(df, include_mtf=include_mtf, regime_params=regime_params)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', pd.errors.PerformanceWarning)
+        df = add_feature_library(df, include_mtf=include_mtf, regime_params=regime_params)
+    df = df.copy()
+
     _keep = [
         c for c in [
         'fl_regime',
