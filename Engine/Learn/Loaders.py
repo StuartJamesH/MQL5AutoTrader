@@ -26,7 +26,7 @@ class SequenceDataset(Dataset):
             self.df_idx = df_idx
         
         # Build sequences and targets
-        self.y_seqs = np.array([self.y[i+self.seq_len] for i in range(self.num_samples)])
+        self.y_seqs = np.array([self.y[i+self.seq_len - 1] for i in range(self.num_samples)])
         self.indices = np.arange(len(self.y_seqs))
 
         # Anchor-time / session gating: restrict to caller-supplied sequence indices
