@@ -1283,10 +1283,12 @@ def add_price_features(df: pd.DataFrame, regime_params=None) -> pd.DataFrame:
 
     return df 
 
-def _add_features_EURUSD(df: pd.DataFrame, include_mtf: bool = False) -> pd.DataFrame:
+def _add_features_EURUSD(df: pd.DataFrame, include_mtf: bool = False, regime_params: dict = None) -> pd.DataFrame:
     """
     Add the features selected for EURUSD by the Feature ML Lab.
     Generated automatically — edit with care.
+
+    Pass regime_params to enable the causal market regime feature (fl_regime).
 
     Selected features (88 total):
         fl_z_60, fl_momentum_vote, fl_ema13_slope_5, fl_hl_range_atr, fl_ema_vote,
@@ -1409,7 +1411,7 @@ def _add_features_EURUSD(df: pd.DataFrame, include_mtf: bool = False) -> pd.Data
         if c in df.columns
     ]
     # Retain OHLCV + Time columns alongside features
-    _ohlcv = [c for c in ['Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'target']
+    _ohlcv = [c for c in ['Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'target', 'sell_y', 'buy_y']
               if c in df.columns]
     _final = _ohlcv + [c for c in _keep if c not in _ohlcv]
     return df[_final]
