@@ -35,9 +35,7 @@ class TripleBarrierHiLowBinary:
     def __init__(
         self,
         symbol: str,
-        buy_model: torch.nn.Module,
         buy_model_pack: dict,
-        sell_model: torch.nn.Module,
         sell_model_pack: dict,
         patience: int,
         risk: float = 50,
@@ -85,7 +83,7 @@ class TripleBarrierHiLowBinary:
         self.ema2_period = ema2_period
 
         # --- Model + preprocessing (buy) ---
-        self.buy_model = buy_model
+        self.buy_model = self._build_model(buy_model_pack)
         self.buy_model_pack = buy_model_pack
         self.buy_model_info = buy_model_pack["model_info"]
         self.buy_seq_len = int(self.buy_model_info.get("seq_len", 256))
@@ -96,7 +94,7 @@ class TripleBarrierHiLowBinary:
         self.buy_features = buy_model_pack["feature_functions"]
 
         # --- Model + preprocessing (sell) ---
-        self.sell_model = sell_model
+        self.sell_model = self._build_model(sell_model_pack)
         self.sell_model_pack = sell_model_pack
         self.sell_model_info = sell_model_pack["model_info"]
         self.sell_seq_len = int(self.sell_model_info.get("seq_len", 256))
@@ -128,6 +126,44 @@ class TripleBarrierHiLowBinary:
 
         # Cache last prediction metrics for logging
         self._last_metrics: dict = {}
+
+    # ------------------------------------------------------------------
+    # Model loading
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_model(model_pack: dict) -> torch.nn.Module:
+        """Instantiate and load weights for the model described by *model_pack*."""
+        from Learn.Models import (
+            LSTMAttentionSEClassifier,
+            LSTMClassifier,
+            TCNAttentionSEClassifier,
+            TransformerClassifier,
+            TransformerSEClassifier,
+            HybridLSTMTransformer,
+        )
+
+        model_info = model_pack.get("model_info", {})
+        model_params = model_pack.get("model_params", {})
+        model_type = str(model_info.get("model_type", ""))
+
+        if "TCN" in model_type:
+            model_cls = TCNAttentionSEClassifier
+        elif "TransformerSE" in model_type:
+            model_cls = TransformerSEClassifier
+        elif "Hybrid" in model_type:
+            model_cls = HybridLSTMTransformer
+        elif "Transformer" in model_type:
+            model_cls = TransformerClassifier
+        elif "LSTM" in model_type or model_type in ("LSTM_TripleBarrier", "LSTM_TripleBarrier_HiLow"):
+            model_cls = LSTMAttentionSEClassifier
+        else:
+            model_cls = LSTMClassifier
+
+        model = model_cls(**model_params)
+        model.load_state_dict(model_pack["model"])
+        model.eval()
+        return model
 
     def _initialize_logging(self) -> None:
         log_dir = "Engine/Learn/Trade Logs"

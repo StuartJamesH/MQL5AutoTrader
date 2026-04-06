@@ -33,7 +33,6 @@ class TripleBarrierHiLowMulticlass:
     def __init__(
         self,
         symbol: str,
-        model: torch.nn.Module,
         model_pack: dict,
         patience: int,
         maxlen: int = 7_000,
@@ -78,7 +77,7 @@ class TripleBarrierHiLowMulticlass:
         self.risk = risk
 
         # --- Model + preprocessing ---
-        self.model = model
+        self.model = self._build_model(model_pack)
         self.model_pack = model_pack
         self.model_info = model_pack["model_info"]
         self.seq_len = int(self.model_info.get("seq_len", 256))
@@ -111,6 +110,44 @@ class TripleBarrierHiLowMulticlass:
 
         # Cache last prediction metrics for logging
         self._last_metrics: dict = {}
+
+    # ------------------------------------------------------------------
+    # Model loading
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_model(model_pack: dict) -> torch.nn.Module:
+        """Instantiate and load weights for the model described by *model_pack*."""
+        from Learn.Models import (
+            LSTMAttentionSEClassifier,
+            LSTMClassifier,
+            TCNAttentionSEClassifier,
+            TransformerClassifier,
+            TransformerSEClassifier,
+            HybridLSTMTransformer,
+        )
+
+        model_info = model_pack.get("model_info", {})
+        model_params = model_pack.get("model_params", {})
+        model_type = str(model_info.get("model_type", ""))
+
+        if "TCN" in model_type:
+            model_cls = TCNAttentionSEClassifier
+        elif "TransformerSE" in model_type:
+            model_cls = TransformerSEClassifier
+        elif "Hybrid" in model_type:
+            model_cls = HybridLSTMTransformer
+        elif "Transformer" in model_type:
+            model_cls = TransformerClassifier
+        elif "LSTM" in model_type or model_type in ("LSTM_TripleBarrier", "LSTM_TripleBarrier_HiLow"):
+            model_cls = LSTMAttentionSEClassifier
+        else:
+            model_cls = LSTMClassifier
+
+        model = model_cls(**model_params)
+        model.load_state_dict(model_pack["model"])
+        model.eval()
+        return model
 
     # ------------------------------------------------------------------
     # Logging
