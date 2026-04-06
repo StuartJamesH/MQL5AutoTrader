@@ -47,40 +47,6 @@ def _load_model_pack(path: str) -> dict:
         return pickle.load(f)
 
 
-def _build_model(model_pack: dict) -> torch.nn.Module:
-    """Instantiate and load weights for the model described by *model_pack*."""
-    from Learn.Models import (
-        LSTMAttentionSEClassifier,
-        LSTMClassifier,
-        TCNAttentionSEClassifier,
-        TransformerClassifier,
-        TransformerSEClassifier,
-        HybridLSTMTransformer,
-    )
-
-    model_info = model_pack.get("model_info", {})
-    model_params = model_pack.get("model_params", {})
-    model_type = str(model_info.get("model_type", ""))
-
-    if "TCN" in model_type:
-        model_cls = TCNAttentionSEClassifier
-    elif "TransformerSE" in model_type:
-        model_cls = TransformerSEClassifier
-    elif "Hybrid" in model_type:
-        model_cls = HybridLSTMTransformer
-    elif "Transformer" in model_type:
-        model_cls = TransformerClassifier
-    elif "LSTM" in model_type or model_type in ("LSTM_TripleBarrier", "LSTM_TripleBarrier_HiLow"):
-        model_cls = LSTMAttentionSEClassifier
-    else:
-        model_cls = LSTMClassifier
-
-    model = model_cls(**model_params)
-    model.load_state_dict(model_pack["model"])
-    model.eval()
-    return model
-
-
 if __name__ == "__main__":
 
     # -----------------------------------------------------------------------
@@ -124,7 +90,6 @@ if __name__ == "__main__":
     # -----------------------------------------------------------------------
     _LOG.info("Loading model pack...")
     model_pack = _load_model_pack(MODEL_PACK_PATH)
-    model = _build_model(model_pack)
     _LOG.info("Model pack loaded.")
 
     ticket_book = TicketBook(db_path=DB_PATH)
@@ -132,7 +97,6 @@ if __name__ == "__main__":
     executor    = MT5LiveExecutionHandler(deviation=DEVIATION, magic=MAGIC, ticket_book=ticket_book)
     strategy    = TripleBarrierHiLowMulticlass(
         symbol=SYMBOL,
-        model=model,
         model_pack=model_pack,
         patience=PATIENCE,
         maxlen=MAXBARS,

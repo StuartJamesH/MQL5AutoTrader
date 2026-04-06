@@ -45,40 +45,6 @@ def _load_model_pack(path: str) -> dict:
         return pickle.load(f)
 
 
-def _build_model(model_pack: dict) -> torch.nn.Module:
-    """Instantiate and load weights for the model described by *model_pack*."""
-    from Learn.Models import (
-        LSTMAttentionSEClassifier,
-        LSTMClassifier,
-        TCNAttentionSEClassifier,
-        TransformerClassifier,
-        TransformerSEClassifier,
-        HybridLSTMTransformer,
-    )
-
-    model_info = model_pack.get("model_info", {})
-    model_params = model_pack.get("model_params", {})
-    model_type = str(model_info.get("model_type", ""))
-
-    if "TCN" in model_type:
-        model_cls = TCNAttentionSEClassifier
-    elif "TransformerSE" in model_type:
-        model_cls = TransformerSEClassifier
-    elif "Hybrid" in model_type:
-        model_cls = HybridLSTMTransformer
-    elif "Transformer" in model_type:
-        model_cls = TransformerClassifier
-    elif "LSTM" in model_type or model_type in ("LSTM_TripleBarrier", "LSTM_TripleBarrier_HiLow"):
-        model_cls = LSTMAttentionSEClassifier
-    else:
-        model_cls = LSTMClassifier
-
-    model = model_cls(**model_params)
-    model.load_state_dict(model_pack["model"])
-    model.eval()
-    return model
-
-
 if __name__ == "__main__":
 
     # -----------------------------------------------------------------------
@@ -125,8 +91,6 @@ if __name__ == "__main__":
     _LOG.info("Loading model packs...")
     buy_pack  = _load_model_pack(BUY_PACK_PATH)
     sell_pack = _load_model_pack(SELL_PACK_PATH)
-    buy_model  = _build_model(buy_pack)
-    sell_model = _build_model(sell_pack)
     _LOG.info("Model packs loaded.")
 
     ticket_book = TicketBook(db_path=DB_PATH)
@@ -134,9 +98,7 @@ if __name__ == "__main__":
     executor    = MT5LiveExecutionHandler(deviation=DEVIATION, magic=MAGIC, ticket_book=ticket_book)
     strategy    = TripleBarrierHiLowBinary(
         symbol=SYMBOL,
-        buy_model=buy_model,
         buy_model_pack=buy_pack,
-        sell_model=sell_model,
         sell_model_pack=sell_pack,
         patience=PATIENCE,
         risk=RISK,
