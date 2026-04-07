@@ -15,7 +15,7 @@ from sklearn.metrics import ConfusionMatrixDisplay, accuracy_score, confusion_ma
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from Learn.features import _add_features_US500
+from Learn.features import _add_features_XAUUSD, _add_features_EURUSD, _add_features_US500
 from Learn.labels import causal_triple_barrier_hilow_trend_labeler, calculate_trade_outcomes_all_candles
 from Learn.preprocess import preprocess_ohlcv
 from Learn.Loaders import SequenceDataset
@@ -31,12 +31,12 @@ N_ROWS = None
 FEATURES = _add_features_US500
 
 # Use a fixed recent tail for validation; train on everything before it.
-VAL_BARS = 2000
-MIN_TRAIN_ROWS = 20000
+VAL_BARS = 10_000
+MIN_TRAIN_ROWS = 20_000
 
 SEQ_LEN = 256
 BATCH_SIZE = 512
-NUM_EPOCHS = 10
+NUM_EPOCHS = 15
 BASE_LR = 1e-4
 WEIGHT_DECAY = 5e-4
 
@@ -50,27 +50,27 @@ OUTPUT_DIR = Path("Engine/Model Packs")
 LOG_FILE = Path("Engine/train_multiclass_prod.log")
 
 regime_params = {
-    "ma_period": 50,
-    "slope_smoothness": 30,
-    "regime_min_duration": 0,
-    "atr_window": 60,
-    "atr_lookback": 1440,
-    "atr_percentile": 0.0,
-    "slope_threshold": 0.03,
-}
+      "ma_period": 60,
+      "slope_smoothness": 50,
+      "regime_min_duration": 0,
+      "atr_window": 60,
+      "atr_lookback": 720,
+      "atr_percentile": 0.0,
+      "slope_threshold": 5e-6
+    }
 
 label_params = {
-    "z_window": 14,
-    "z_thresh": 1,
-    "z_limit": 5,
-    "atr_window": 14,
-    "tp_mult": 2.5,
-    "sl_mult": 2.5,
-    "max_horizon": 90,
-    "trend_pullback_thresh": 1.0,
-    "regime_params": regime_params,
-    "skip_range": True,
-}
+      "z_window": 14,
+      "z_thresh": 1,
+      "z_limit": 5,
+      "atr_window": 14,
+      "tp_mult": 2.5,
+      "sl_mult": 2.5,
+      "max_horizon": 90,
+      "trend_pullback_thresh": 1.2,
+      "regime_params": regime_params,
+      "skip_range": True
+    }
 
 outcome_params = {
     k: v for k, v in label_params.items() if k in ["atr_window", "tp_mult", "sl_mult", "max_horizon"]
@@ -79,16 +79,17 @@ outcome_params["max_horizon"] = 1000
 
 lstm_model_params = {
     "input_dim": None,
-    "hidden_dim": 512,
-    "num_layers": 4,
-    "num_classes": 3,
-    "bidirectional": True,
-    "dropout": 0.20,
-    "dropout_out": 0.40,
-    "attn_heads": 8,
-    "attn_dropout": 0.10,
-    "use_learned_query": True,
-    "bias_init": None,
+    'hidden_dim':         256,
+    'num_layers':         3,
+    'num_classes':        3,
+    'bidirectional':      True,
+    'dropout':            0.15,  # was 0.20 — lower inter-layer suppression compensates for tight head
+    'dropout_out':        0.50,  # was 0.38 — aggressive; only fires on strong consistent activations
+    'attn_heads':         8,
+    'attn_dropout':       0.05,  # was 0.08
+    'se_context_window':  32,   # new: SE context window (in timesteps) for local feature recalibration
+    'use_learned_query':  True,
+    'bias_init':          None,
 }
 
 # TCN: kernel_size=3, num_layers=6 → receptive field ≈ 253 bars (matches SEQ_LEN=256)
@@ -108,14 +109,14 @@ tcn_model_params = {
 }
 
 loss_params_template = {
-    "alpha": None,
-    "gamma": 2.5,
-    "trade_classes": (0, 2),
-    "pr_weight": 10.0,
-    "recall_floor": 0.10,      # hinge activates below 10% recall — matches production goal
-    "rec_floor_weight": 20.0,  # quadratic hinge strength
-    "direction_penalty": 1.5,  # SELL↔BUY confusion penalty
-    "eps": 1e-6,
+    'alpha':             None,
+    'gamma':             2.5,
+    'trade_classes':     (0, 2),
+    'pr_weight':         10.0,   # primary precision lever
+    'recall_floor':      0.20,   # hinge activates below this recall per class
+    'rec_floor_weight':  20.0,   # quadratic hinge strength
+    'direction_penalty': 1.5,    # SELL↔BUY confusion cost
+    'eps':               1e-6,
 }
 
 
