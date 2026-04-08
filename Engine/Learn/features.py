@@ -1171,21 +1171,6 @@ def add_feature_library(
     df['fl_r1_dist']   = (close - _r1) / (atr14 + eps)
     df['fl_s1_dist']   = (close - _s1) / (atr14 + eps)
 
-    # Fractal pivot flags (5-bar pattern — skipped in fast_mode)
-    if not fast_mode:
-        _frac_hi = np.zeros(len(df))
-        _frac_lo = np.zeros(len(df))
-        for _i in range(2, len(df) - 2):
-            h_i = high.iat[_i]
-            if (h_i > high.iat[_i-2] and h_i > high.iat[_i-1]
-                    and h_i > high.iat[_i+1] and h_i > high.iat[_i+2]):
-                _frac_hi[_i] = 1
-            l_i = low.iat[_i]
-            if (l_i < low.iat[_i-2] and l_i < low.iat[_i-1]
-                    and l_i < low.iat[_i+1] and l_i < low.iat[_i+2]):
-                _frac_lo[_i] = 1
-        df['fl_fractal_high'] = _frac_hi
-        df['fl_fractal_low']  = _frac_lo
 
     # Round-number proximity (% distance from nearest 10-pip / integer level)
     _round_level = (close / 0.001).round() * 0.001   # 1-pip rounding for FX
@@ -1297,8 +1282,8 @@ def _add_features_EURUSD(df: pd.DataFrame, include_mtf: bool = False, regime_par
     fl_dema14_vs_close, fl_macd_hist_norm, fl_price_loc_128, fl_roc_20,
     fl_donchian_trend_60, fl_stoch_kd_diff, fl_aroon_osc_14, fl_slope_20_norm,
     fl_ichi_chikou_vs_close, fl_rsi14_slope_3, fl_atr_ratio_14,
-    fl_range_contract, fl_fractal_high, fl_slope_60, fl_di_minus, fl_di_plus,
-    fl_er_60, fl_close_loc, fl_trix_14, fl_roc_10, fl_fractal_low,
+    fl_range_contract, fl_slope_60, fl_di_minus, fl_di_plus,
+    fl_er_60, fl_close_loc, fl_trix_14, fl_roc_10, 
     fl_donchian_trend_20, fl_er_14, fl_ret_lag_2, fl_er_30, fl_ichi_tk_diff,
     fl_adx14, fl_body, fl_pct_from_low_20, fl_rv_60, fl_hour_sin, fl_log_volume,
     fl_body_to_range, fl_price_loc_256, fl_mfi_14, fl_pct_from_high_20,
@@ -1344,7 +1329,6 @@ def _add_features_EURUSD(df: pd.DataFrame, include_mtf: bool = False, regime_par
         'fl_rsi14_slope_3',
         'fl_atr_ratio_14',
         'fl_range_contract',
-        'fl_fractal_high',
         'fl_slope_60',
         'fl_di_minus',
         'fl_di_plus',
@@ -1352,7 +1336,6 @@ def _add_features_EURUSD(df: pd.DataFrame, include_mtf: bool = False, regime_par
         'fl_close_loc',
         'fl_trix_14',
         'fl_roc_10',
-        'fl_fractal_low',
         'fl_donchian_trend_20',
         'fl_er_14',
         'fl_ret_lag_2',
@@ -1432,7 +1415,7 @@ def _add_features_XAUUSD(df: pd.DataFrame, include_mtf: bool = False, regime_par
     fl_donchian_trend_60, fl_ichi_close_vs_kijun, fl_rsi14_lag_2,
     fl_hl_range_atr, fl_donchian_trend_20, fl_ret_10, fl_ema_vote, fl_roc_20,
     fl_pct_from_high_20, fl_rv_ratio_5_20, fl_run_len, fl_range_vs_atr5,
-    fl_price_loc_128, fl_roc_5, fl_fractal_low, fl_fractal_high, fl_close_loc,
+    fl_price_loc_128, fl_roc_5, fl_close_loc,
     fl_pct_from_low_60, fl_pct_from_low_20, fl_bb_width_20, fl_ret_lag_2,
     fl_H_rel, fl_rv_60, fl_range_contract, fl_parkinson_20, fl_session_tokyo,
     fl_pct_from_high_60, fl_obv_slope_10, fl_ichi_tk_diff, fl_mfi_14,
@@ -1486,8 +1469,6 @@ def _add_features_XAUUSD(df: pd.DataFrame, include_mtf: bool = False, regime_par
         'fl_range_vs_atr5',
         'fl_price_loc_128',
         'fl_roc_5',
-        'fl_fractal_low',
-        'fl_fractal_high',
         'fl_close_loc',
         'fl_pct_from_low_60',
         'fl_pct_from_low_20',
@@ -1569,7 +1550,7 @@ def _add_features_US500(df: pd.DataFrame, include_mtf: bool = False, regime_para
     fl_rv_10, fl_session_london, fl_range_contract, fl_ema21_50_diff,
     fl_macd_hist_slope_5, fl_stoch_kd_diff, fl_price_loc_128,
     fl_time_in_trend_20, fl_session_ny, fl_stoch_k, fl_roc_10,
-    fl_pct_from_high_60, fl_rsi14_slope_3, fl_fractal_low, fl_fractal_high,
+    fl_pct_from_high_60, fl_rsi14_slope_3,
     fl_pct_from_high_20, fl_di_minus, fl_session_tokyo, fl_inside_bar,
     fl_lower_wick, fl_roc_5, fl_trix_14, fl_force_index_13, fl_di_plus,
     fl_body_atr, fl_ichi_senA_vs_senB, fl_er_60, fl_donchian_trend_20,
@@ -1618,8 +1599,6 @@ def _add_features_US500(df: pd.DataFrame, include_mtf: bool = False, regime_para
         'fl_roc_10',
         'fl_pct_from_high_60',
         'fl_rsi14_slope_3',
-        'fl_fractal_low',
-        'fl_fractal_high',
         'fl_pct_from_high_20',
         'fl_di_minus',
         'fl_session_tokyo',
