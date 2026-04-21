@@ -221,35 +221,35 @@
   },
   "EURUSD_fml": {
     "regime_params": {
-      "ma_period": 60,
-      "slope_smoothness": 10,
+      "ma_period": 30,
+      "slope_smoothness": 50,
       "regime_min_duration": 0,
       "atr_window": 60,
-      "atr_lookback": 720,
+      "atr_lookback": 1440,
       "atr_percentile": 0.0,
-      "slope_threshold": 0.0
+      "slope_threshold": 5e-06
     },
     "label_params": {
       "z_window": 14,
       "z_thresh": 1,
       "z_limit": 5,
       "atr_window": 14,
-      "tp_mult": 2.0,
-      "sl_mult": 2.0,
-      "max_horizon": 60,
-      "trend_pullback_thresh": 0.5,
+      "tp_mult": 2.5,
+      "sl_mult": 2.5,
+      "max_horizon": 90,
+      "trend_pullback_thresh": 1.0,
       "skip_range": true
     }
   },
   "XAUUSD_fml": {
     "regime_params": {
-      "ma_period": 60,
-      "slope_smoothness": 10,
+      "ma_period": 30,
+      "slope_smoothness": 50,
       "regime_min_duration": 0,
       "atr_window": 60,
-      "atr_lookback": 720,
+      "atr_lookback": 1440,
       "atr_percentile": 0.0,
-      "slope_threshold": 0.0
+      "slope_threshold": 0.05
     },
     "label_params": {
       "z_window": 14,
@@ -315,7 +315,7 @@
       "atr_window": 60,
       "atr_lookback": 720,
       "atr_percentile": 0.0,
-      "slope_threshold": 0.0
+      "slope_threshold": 1e-06
     },
     "label_params": {
       "z_window": 14,
@@ -323,7 +323,7 @@
       "z_limit": 5,
       "atr_window": 14,
       "tp_mult": 2.5,
-      "sl_mult": 2.5,
+      "sl_mult": 2.0,
       "max_horizon": 90,
       "trend_pullback_thresh": 1.0,
       "skip_range": true
@@ -337,7 +337,29 @@
       "atr_window": 60,
       "atr_lookback": 720,
       "atr_percentile": 0.0,
-      "slope_threshold": 0.07
+      "slope_threshold": 5e-06
+    },
+    "label_params": {
+      "z_window": 14,
+      "z_thresh": 1,
+      "z_limit": 5,
+      "atr_window": 14,
+      "tp_mult": 2.5,
+      "sl_mult": 2.0,
+      "max_horizon": 90,
+      "trend_pullback_thresh": 1.0,
+      "skip_range": true
+    }
+  },
+  "US2000_fml": {
+    "regime_params": {
+      "ma_period": 30,
+      "slope_smoothness": 50,
+      "regime_min_duration": 0,
+      "atr_window": 60,
+      "atr_lookback": 1440,
+      "atr_percentile": 0.0,
+      "slope_threshold": 0.05
     },
     "label_params": {
       "z_window": 14,
@@ -347,7 +369,95 @@
       "tp_mult": 2.5,
       "sl_mult": 2.5,
       "max_horizon": 90,
-      "trend_pullback_thresh": 1.2,
+      "trend_pullback_thresh": 1.0,
+      "skip_range": true
+    }
+  },
+  "US2000_M1_prod": {
+    "regime_params": {
+      "ma_period": 60,
+      "slope_smoothness": 10,
+      "regime_min_duration": 0,
+      "atr_window": 60,
+      "atr_lookback": 720,
+      "atr_percentile": 0.0,
+      "slope_threshold": 0.05
+    },
+    "label_params": {
+      "z_window": 14,
+      "z_thresh": 1,
+      "z_limit": 5,
+      "atr_window": 14,
+      "tp_mult": 2.5,
+      "sl_mult": 2.5,
+      "max_horizon": 90,
+      "trend_pullback_thresh": 1.0,
+      "skip_range": true
+    }
+  },
+  "NAS100_M1_prod": {
+    "regime_params": {
+      "ma_period": 60,
+      "slope_smoothness": 10,
+      "regime_min_duration": 0,
+      "atr_window": 60,
+      "atr_lookback": 720,
+      "atr_percentile": 0.0,
+      "slope_threshold": 0.3
+    },
+    "label_params": {
+      "z_window": 14,
+      "z_thresh": 1,
+      "z_limit": 5,
+      "atr_window": 14,
+      "tp_mult": 2.5,
+      "sl_mult": 2.5,
+      "max_horizon": 90,
+      "trend_pullback_thresh": 1.0,
+      "skip_range": true
+    }
+  },
+  "../data/EURUSD_M1_prod": {
+    "regime_params": {
+      "ma_period": 60,
+      "slope_smoothness": 10,
+      "regime_min_duration": 0,
+      "atr_window": 60,
+      "atr_lookback": 720,
+      "atr_percentile": 0.0,
+      "slope_threshold": 1e-06
+    },
+    "label_params": {
+      "z_window": 14,
+      "z_thresh": 1,
+      "z_limit": 5,
+      "atr_window": 14,
+      "tp_mult": 2.5,
+      "sl_mult": 2.0,
+      "max_horizon": 90,
+      "trend_pullback_thresh": 0.5,
+      "skip_range": true
+    }
+  },
+  "US500_M1_prod": {
+    "regime_params": {
+      "ma_period": 60,
+      "slope_smoothness": 50,
+      "regime_min_duration": 0,
+      "atr_window": 60,
+      "atr_lookback": 720,
+      "atr_percentile": 0.0,
+      "slope_threshold": 3e-06
+    },
+    "label_params": {
+      "z_window": 14,
+      "z_thresh": 1,
+      "z_limit": 5,
+      "atr_window": 14,
+      "tp_mult": 2.5,
+      "sl_mult": 2.0,
+      "max_horizon": 90,
+      "trend_pullback_thresh": 1.0,
       "skip_range": true
     }
   }
