@@ -69,7 +69,7 @@ def preprocess_ohlcv(
         base_features_scale = new_base
     else:
         # If neither set is fully present, default to an empty list (no scaling) and log a warning
-        print("Warning: Neither legacy nor new base features found. No features will be scaled.")
+        # print("Warning: Neither legacy nor new base features found. No features will be scaled.")
         base_features_scale = []
     
     # Dynamically detect binary/ternary flags that should NOT be scaled
