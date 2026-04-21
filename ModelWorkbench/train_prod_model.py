@@ -2,9 +2,11 @@ import inspect
 import json
 import logging
 import math
+import os
 import pickle
 from pathlib import Path
 
+from dotenv import load_dotenv
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -26,9 +28,9 @@ from Learn.Loss import TradeProfitabilityLoss
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-DS_NAME = "data/US500_1minute.csv"
+DS_NAME = "data/EURUSD_M1_520weeks.csv"
 N_ROWS = None
-FEATURES = _add_features_US500
+FEATURES = _add_features_EURUSD
 
 # Use a fixed recent tail for validation; train on everything before it.
 VAL_BARS = 10_000
@@ -36,18 +38,20 @@ MIN_TRAIN_ROWS = 20_000
 
 SEQ_LEN = 256
 BATCH_SIZE = 512
-NUM_EPOCHS = 15
+NUM_EPOCHS = 30
 BASE_LR = 1e-4
 WEIGHT_DECAY = 5e-4
 
 ROLLOVER_WINDOW = ("21:30", "22:00")
 TRADING_HOURS = None
-COMMISSION = 0.10
+COMMISSION = 0.00
 
 MODEL_ARCH    = "LSTM"   # "LSTM" | "TCN"
 MODEL_VERSION = "prod"
+RESUME_MODEL_PACK: str | None = None  # Set to a .pkl model pack path to resume training from that checkpoint
 OUTPUT_DIR = Path("Engine/Model Packs")
 LOG_FILE = Path("Engine/train_multiclass_prod.log")
+CLOUD_LOG = True  # <-- set False to disable mirroring to CLOUD_LOG_DIR in .env
 
 regime_params = {
       "ma_period": 60,
@@ -56,7 +60,7 @@ regime_params = {
       "atr_window": 60,
       "atr_lookback": 720,
       "atr_percentile": 0.0,
-      "slope_threshold": 5e-6
+      "slope_threshold": 5e-6 # 0.06 Gold
     }
 
 label_params = {
@@ -120,7 +124,7 @@ loss_params_template = {
 }
 
 
-def setup_logging() -> logging.Logger:
+def setup_logging(cloud_log: bool = True) -> logging.Logger:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
@@ -137,6 +141,26 @@ def setup_logging() -> logging.Logger:
     file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
+
+    if cloud_log:
+        load_dotenv()
+        cloud_dir = os.getenv("CLOUD_LOG_DIR")
+        if cloud_dir:
+            try:
+                os.makedirs(cloud_dir, exist_ok=True)
+                cloud_path = os.path.join(cloud_dir, LOG_FILE.name)
+                cloud_handler = logging.FileHandler(cloud_path, encoding="utf-8")
+                cloud_handler.setFormatter(formatter)
+                logger.addHandler(cloud_handler)
+            except OSError as exc:
+                logger.warning(
+                    "Could not set up cloud log at '%s': %s — logging locally only.",
+                    cloud_dir, exc,
+                )
+        else:
+            logger.warning(
+                "CLOUD_LOG=True but CLOUD_LOG_DIR is not set in .env — logging locally only."
+            )
 
     return logger
 
@@ -166,9 +190,11 @@ def split_train_val_tail(df: pd.DataFrame, val_bars: int, min_train_rows: int) -
     return df_train, df_val
 
 
-def apply_multiclass_labels(df: pd.DataFrame) -> pd.DataFrame:
+def apply_multiclass_labels(df: pd.DataFrame, label_params_: dict | None = None, rollover_window_: tuple | None = None) -> pd.DataFrame:
+    lp = label_params_ if label_params_ is not None else label_params
+    rw = rollover_window_ if rollover_window_ is not None else ROLLOVER_WINDOW
     d = df.copy()
-    signals = causal_triple_barrier_hilow_trend_labeler(d, **label_params).rename(columns={"side": "target"})
+    signals = causal_triple_barrier_hilow_trend_labeler(d, **lp).rename(columns={"side": "target"})
     winning = signals[signals["label"] == 1]
 
     d["target"] = 1
@@ -179,16 +205,17 @@ def apply_multiclass_labels(df: pd.DataFrame) -> pd.DataFrame:
         d["Time"] = pd.to_datetime(d["Time"])
 
     rollover = (
-        (d["Time"].dt.time >= pd.to_datetime(ROLLOVER_WINDOW[0]).time())
-        & (d["Time"].dt.time < pd.to_datetime(ROLLOVER_WINDOW[1]).time())
+        (d["Time"].dt.time >= pd.to_datetime(rw[0]).time())
+        & (d["Time"].dt.time < pd.to_datetime(rw[1]).time())
     )
     d.loc[rollover, "target"] = 1
     return d
 
 
-def add_outcomes(df: pd.DataFrame) -> pd.DataFrame:
+def add_outcomes(df: pd.DataFrame, outcome_params_: dict | None = None) -> pd.DataFrame:
+    op = outcome_params_ if outcome_params_ is not None else outcome_params
     d = df.copy()
-    outcomes = calculate_trade_outcomes_all_candles(d, **outcome_params)
+    outcomes = calculate_trade_outcomes_all_candles(d, **op)
 
     for col in ["buy_outcome", "sell_outcome"]:
         outcomes[col] = outcomes[col].where(outcomes[col] <= 0, outcomes[col] * 2)
@@ -211,7 +238,8 @@ def _session_seq_indices(times: np.ndarray, seq_len: int, trading_hours: tuple[s
     ]
 
 
-def build_dataloaders(df_train: pd.DataFrame, df_val: pd.DataFrame, logger: logging.Logger):
+def build_dataloaders(df_train: pd.DataFrame, df_val: pd.DataFrame, logger: logging.Logger, resume_scaler=None, seq_len: int | None = None):
+    _seq_len = seq_len if seq_len is not None else SEQ_LEN
     preprocess_ohlcv_args = {
         "target_col": "target",
         "outcomes_col": None,
@@ -221,7 +249,7 @@ def build_dataloaders(df_train: pd.DataFrame, df_val: pd.DataFrame, logger: logg
     }
 
     X_train, y_train, scaler, features, _, proc_df_train = preprocess_ohlcv(
-        df_train.copy(), **preprocess_ohlcv_args, scaler=None, return_df=True
+        df_train.copy(), **preprocess_ohlcv_args, scaler=resume_scaler, return_df=True
     )
     X_val, y_val, _, _, _, proc_df_val = preprocess_ohlcv(
         df_val.copy(), **preprocess_ohlcv_args, scaler=scaler, return_df=True
@@ -239,13 +267,13 @@ def build_dataloaders(df_train: pd.DataFrame, df_val: pd.DataFrame, logger: logg
     train_times = proc_df_train["Time"].to_numpy()
     val_times = proc_df_val["Time"].to_numpy()
 
-    train_seq_idx = _session_seq_indices(train_times, SEQ_LEN, TRADING_HOURS)
-    val_seq_idx = _session_seq_indices(val_times, SEQ_LEN, TRADING_HOURS)
+    train_seq_idx = _session_seq_indices(train_times, _seq_len, TRADING_HOURS)
+    val_seq_idx = _session_seq_indices(val_times, _seq_len, TRADING_HOURS)
 
     train_ds = SequenceDataset(
         X_train,
         y_train,
-        seq_len=SEQ_LEN,
+        seq_len=_seq_len,
         df_idx=list(range(len(X_train))),
         custom_targets=None,
         trade_outcomes=outcomes_train_2d,
@@ -254,7 +282,7 @@ def build_dataloaders(df_train: pd.DataFrame, df_val: pd.DataFrame, logger: logg
     val_ds = SequenceDataset(
         X_val,
         y_val,
-        seq_len=SEQ_LEN,
+        seq_len=_seq_len,
         df_idx=list(range(len(X_val))),
         custom_targets=None,
         trade_outcomes=outcomes_val_2d,
@@ -382,10 +410,25 @@ def save_plots(model_name: str, history: dict, eval_pack: dict) -> None:
 
 
 def main() -> None:
-    logger = setup_logging()
+    logger = setup_logging(cloud_log=CLOUD_LOG)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
+
+    # --- Resume from model pack ---
+    resume_pack = None
+    resume_model_pack_path = None
+    if RESUME_MODEL_PACK:
+        resume_model_pack_path = Path(RESUME_MODEL_PACK)
+        logger.info("Loading resume pack: %s", resume_model_pack_path)
+        with open(resume_model_pack_path, "rb") as _f:
+            resume_pack = pickle.load(_f)
+        logger.info(
+            "Resume pack loaded | model_type=%s seq_len=%d best_prev_epoch=%d",
+            resume_pack["model_info"].get("model_type", "unknown"),
+            resume_pack["input_shape"][0],
+            resume_pack["model_info"].get("best_epoch", -1),
+        )
 
     df_all = load_ohlcv(DS_NAME, N_ROWS)
     if not pd.api.types.is_datetime64_any_dtype(df_all["Time"]):
@@ -401,8 +444,15 @@ def main() -> None:
         df_val_raw["Time"].iloc[0],
     )
 
-    df_train = add_outcomes(apply_multiclass_labels(df_train_raw))
-    df_val = add_outcomes(apply_multiclass_labels(df_val_raw))
+    _label_params    = resume_pack["label_params"]    if resume_pack else label_params
+    _regime_params   = resume_pack["regime_params"]   if resume_pack else regime_params
+    _outcome_params  = resume_pack["outcome_params"]  if resume_pack else outcome_params
+    _rollover_window = resume_pack["rollover_window"] if resume_pack else ROLLOVER_WINDOW
+    _features_fn     = resume_pack["feature_function"] if resume_pack else FEATURES
+    _seq_len         = resume_pack["input_shape"][0]  if resume_pack else SEQ_LEN
+
+    df_train = add_outcomes(apply_multiclass_labels(df_train_raw, _label_params, _rollover_window), _outcome_params)
+    df_val   = add_outcomes(apply_multiclass_labels(df_val_raw,   _label_params, _rollover_window), _outcome_params)
 
     logger.info(
         "Label dist train=%s | val=%s",
@@ -410,10 +460,11 @@ def main() -> None:
         df_val["target"].value_counts(normalize=True).sort_index().to_dict(),
     )
 
-    df_train = FEATURES(df_train, regime_params=regime_params)
-    df_val = FEATURES(df_val, regime_params=regime_params)
+    df_train = _features_fn(df_train, regime_params=_regime_params)
+    df_val   = _features_fn(df_val,   regime_params=_regime_params)
 
-    data_pack = build_dataloaders(df_train, df_val, logger)
+    _resume_scaler = resume_pack["scaler"] if resume_pack else None
+    data_pack = build_dataloaders(df_train, df_val, logger, resume_scaler=_resume_scaler, seq_len=_seq_len)
 
     y_train_arr = np.array(data_pack["y_train"])
     p_sell = float((y_train_arr == 0).mean())
@@ -421,20 +472,29 @@ def main() -> None:
     p_buy = float((y_train_arr == 2).mean())
     bias_init = [math.log(p_sell + 1e-8), math.log(p_flat + 1e-8), math.log(p_buy + 1e-8)]
 
-    _MODEL_REGISTRY = {
-        "LSTM": (LSTMAttentionSEClassifier, lstm_model_params),
-        "TCN":  (TCNAttentionSEClassifier,  tcn_model_params),
-    }
-    if MODEL_ARCH not in _MODEL_REGISTRY:
-        raise ValueError(f"Unknown MODEL_ARCH {MODEL_ARCH!r}. Choose 'LSTM' or 'TCN'.")
-    model_cls, base_params = _MODEL_REGISTRY[MODEL_ARCH]
-    model_type = f"{MODEL_ARCH}_Multiclass"
+    if resume_pack:
+        model_cls = resume_pack["model_class"]
+        model_params_local = dict(resume_pack["model_params"])
+        model_params_local["bias_init"] = bias_init
+        model_type = resume_pack["model_info"].get("model_type", "LSTM_Multiclass")
+    else:
+        _MODEL_REGISTRY = {
+            "LSTM": (LSTMAttentionSEClassifier, lstm_model_params),
+            "TCN":  (TCNAttentionSEClassifier,  tcn_model_params),
+        }
+        if MODEL_ARCH not in _MODEL_REGISTRY:
+            raise ValueError(f"Unknown MODEL_ARCH {MODEL_ARCH!r}. Choose 'LSTM' or 'TCN'.")
+        model_cls, base_params = _MODEL_REGISTRY[MODEL_ARCH]
+        model_type = f"{MODEL_ARCH}_Multiclass"
 
-    model_params_local = dict(base_params)
-    model_params_local["input_dim"] = int(data_pack["X_train"].shape[1])
-    model_params_local["bias_init"] = bias_init
+        model_params_local = dict(base_params)
+        model_params_local["input_dim"] = int(data_pack["X_train"].shape[1])
+        model_params_local["bias_init"] = bias_init
 
     model = model_cls(**model_params_local).to(device)
+    if resume_pack:
+        model.load_state_dict({k: v.to(device) for k, v in resume_pack["model"].items()})
+        logger.info("Loaded model weights from resume pack.")
 
     counts = np.maximum(np.bincount(y_train_arr, minlength=3), 1)
     raw_weights = (len(y_train_arr) / (len(counts) * counts)).astype(float)
@@ -484,65 +544,71 @@ def main() -> None:
 
     logger.info("Training start | epochs=%d | batches train=%d val=%d", NUM_EPOCHS, len(data_pack["train_loader"]), len(data_pack["val_loader"]))
 
-    for epoch in range(NUM_EPOCHS):
-        model.train()
-        train_loss_sum = 0.0
-        n_train = 0
+    try:
+        for epoch in range(NUM_EPOCHS):
+            model.train()
+            train_loss_sum = 0.0
+            n_train = 0
 
-        for xb, yb, outcome_b in tqdm(data_pack["train_loader"], desc=f"Epoch {epoch}"):
-            xb = xb.to(device)
-            yb = yb.to(device)
-            outcome_b = outcome_b.to(device) if isinstance(outcome_b, torch.Tensor) else outcome_b
+            for xb, yb, outcome_b in tqdm(data_pack["train_loader"], desc=f"Epoch {epoch}"):
+                xb = xb.to(device)
+                yb = yb.to(device)
+                outcome_b = outcome_b.to(device) if isinstance(outcome_b, torch.Tensor) else outcome_b
 
-            optimizer.zero_grad(set_to_none=True)
-            with torch.amp.autocast("cuda", enabled=use_amp):
-                loss = criterion(model(xb), yb, outcome_b)
+                optimizer.zero_grad(set_to_none=True)
+                with torch.amp.autocast("cuda", enabled=use_amp):
+                    loss = criterion(model(xb), yb, outcome_b)
 
-            scaler_amp.scale(loss).backward()
-            scaler_amp.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler_amp.step(optimizer)
-            scaler_amp.update()
-            scheduler.step()
+                scaler_amp.scale(loss).backward()
+                scaler_amp.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler_amp.step(optimizer)
+                scaler_amp.update()
+                scheduler.step()
 
-            bs = yb.size(0)
-            train_loss_sum += float(loss.item()) * bs
-            n_train += bs
+                bs = yb.size(0)
+                train_loss_sum += float(loss.item()) * bs
+                n_train += bs
 
-        train_loss_epoch = train_loss_sum / max(1, n_train)
-        history["train_losses"].append(float(train_loss_epoch))
+            train_loss_epoch = train_loss_sum / max(1, n_train)
+            history["train_losses"].append(float(train_loss_epoch))
 
-        eval_pack = evaluate(model, data_pack["val_loader"], criterion, device)
-        history["val_losses_all"].append(eval_pack["val_loss"])
-        history["f1_sell"].append(eval_pack["f1_sell"])
-        history["prec_sell"].append(eval_pack["prec_sell"])
-        history["rec_sell"].append(eval_pack["rec_sell"])
-        history["f1_buy"].append(eval_pack["f1_buy"])
-        history["prec_buy"].append(eval_pack["prec_buy"])
-        history["rec_buy"].append(eval_pack["rec_buy"])
-        history["pnl"].append(eval_pack["profit"])
+            eval_pack = evaluate(model, data_pack["val_loader"], criterion, device)
+            history["val_losses_all"].append(eval_pack["val_loss"])
+            history["f1_sell"].append(eval_pack["f1_sell"])
+            history["prec_sell"].append(eval_pack["prec_sell"])
+            history["rec_sell"].append(eval_pack["rec_sell"])
+            history["f1_buy"].append(eval_pack["f1_buy"])
+            history["prec_buy"].append(eval_pack["prec_buy"])
+            history["rec_buy"].append(eval_pack["rec_buy"])
+            history["pnl"].append(eval_pack["profit"])
 
-        if eval_pack["val_loss"] < history["best_val_loss"]:
-            history["best_val_loss"] = eval_pack["val_loss"]
-            history["best_epoch"] = epoch
-            best_model_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-            best_tag = " <-- best"
-        else:
-            best_tag = ""
+            if eval_pack["val_loss"] < history["best_val_loss"]:
+                history["best_val_loss"] = eval_pack["val_loss"]
+                history["best_epoch"] = epoch
+                best_model_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                best_tag = " <-- best"
+            else:
+                best_tag = ""
 
-        logger.info(
-            "Epoch %d | train_loss=%.6f val_loss=%.6f acc=%.4f profit=%.2f (SELL %.2f | BUY %.2f)%s",
-            epoch,
-            train_loss_epoch,
-            eval_pack["val_loss"],
-            eval_pack["acc"],
-            eval_pack["profit"],
-            eval_pack["profit_sell"],
-            eval_pack["profit_buy"],
-            best_tag,
-        )
+            logger.info(
+                "Epoch %d | train_loss=%.6f val_loss=%.6f acc=%.4f profit=%.2f (SELL %.2f | BUY %.2f)%s",
+                epoch,
+                train_loss_epoch,
+                eval_pack["val_loss"],
+                eval_pack["acc"],
+                eval_pack["profit"],
+                eval_pack["profit_sell"],
+                eval_pack["profit_buy"],
+                best_tag,
+            )
 
-    if best_model_state is not None:
+    except KeyboardInterrupt:
+        logger.warning("Training interrupted by user — saving best checkpoint so far (epoch %d).", history["best_epoch"])
+
+    if best_model_state is None:
+        logger.warning("No completed epoch checkpoint available — saving current model state.")
+    else:
         model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
 
     final_eval = evaluate(model, data_pack["val_loader"], criterion, device)
@@ -555,9 +621,12 @@ def main() -> None:
 
     today = pd.Timestamp.now().strftime("%Y%m%d")
     ds_title = Path(DS_NAME).name.split(".")[0]
-    model_name = "_".join([ds_title, model_type, f"{SEQ_LEN}seq", today, MODEL_VERSION])
+    model_name = "_".join([ds_title, model_type, f"{_seq_len}seq", today, MODEL_VERSION])
 
-    save_plots(model_name, history, final_eval)
+    if history["val_losses_all"]:
+        save_plots(model_name, history, final_eval)
+    else:
+        logger.warning("No epoch history to plot — skipping plot generation.")
 
     model_info = {
         "dataset_name": ds_title,
@@ -567,7 +636,7 @@ def main() -> None:
         "model_version": MODEL_VERSION,
         "task": "multiclass",
         "class_map": {0: "SELL", 1: "FLAT", 2: "BUY"},
-        "seq_len": SEQ_LEN,
+        "seq_len": _seq_len,
         "class_weights": weights.tolist(),
         "n_epochs": NUM_EPOCHS,
         "best_epoch": history["best_epoch"],
@@ -576,7 +645,7 @@ def main() -> None:
 
     loss_params_serializable = {**loss_params, "alpha": loss_params["alpha"].cpu().tolist()}
 
-    model_pack_path = OUTPUT_DIR / f"{model_name}_model.pkl"
+    model_pack_path = resume_model_pack_path if resume_pack else OUTPUT_DIR / f"{model_name}_model.pkl"
     with open(model_pack_path, "wb") as f:
         pickle.dump(
             {
@@ -587,19 +656,19 @@ def main() -> None:
                 "model_info": model_info,
                 "features": data_pack["features"],
                 "feature_count": data_pack["X_train"].shape[1],
-                "feature_function": FEATURES,
-                "feature_function_source": inspect.getsource(FEATURES),
+                "feature_function": _features_fn,
+                "feature_function_source": inspect.getsource(_features_fn),
                 "preprocess_function": preprocess_ohlcv,
                 "preprocess_function_source": inspect.getsource(preprocess_ohlcv),
                 "preprocess_args": data_pack["preprocess_ohlcv_args"],
                 "scaler": data_pack["scaler"],
                 "label_function": causal_triple_barrier_hilow_trend_labeler,
                 "label_function_source": inspect.getsource(causal_triple_barrier_hilow_trend_labeler),
-                "label_params": label_params,
-                "regime_params": regime_params,
-                "outcome_params": outcome_params,
-                "rollover_window": ROLLOVER_WINDOW,
-                "input_shape": (SEQ_LEN, data_pack["X_train"].shape[1]),
+                "label_params": _label_params,
+                "regime_params": _regime_params,
+                "outcome_params": _outcome_params,
+                "rollover_window": _rollover_window,
+                "input_shape": (_seq_len, data_pack["X_train"].shape[1]),
                 "loss_params": loss_params_serializable,
                 "loss_function": TradeProfitabilityLoss,
                 "loss_function_source": inspect.getsource(TradeProfitabilityLoss),
@@ -643,7 +712,7 @@ def main() -> None:
         "config": {
             "dataset": DS_NAME,
             "val_bars": VAL_BARS,
-            "seq_len": SEQ_LEN,
+            "seq_len": _seq_len,
             "batch_size": BATCH_SIZE,
             "epochs": NUM_EPOCHS,
             "base_lr": BASE_LR,
@@ -677,7 +746,10 @@ def main() -> None:
         },
     }
 
-    summary_path = OUTPUT_DIR / f"{model_name}_summary.json"
+    summary_path = (
+        Path(str(resume_model_pack_path).replace("_model.pkl", "_summary.json"))
+        if resume_pack else OUTPUT_DIR / f"{model_name}_summary.json"
+    )
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
 
