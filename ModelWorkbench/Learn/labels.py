@@ -390,7 +390,8 @@ def super_smoother(series, period):
     return pd.Series(filt, index=series.index)
 
 def causal_market_regime(df, ma_period=21, slope_smoothness=1, regime_min_duration=1,
-                         slope_threshold=0, atr_window=14, atr_lookback=100, atr_percentile=20):
+                         slope_threshold=0, atr_window=14, atr_lookback=100, atr_percentile=20,
+                         slope_lookback=200, slope_percentile=30):
     """
     Calculates market regime using purely causal (trailing) indicators.
     Returns a Series with values: 1 (Uptrend), 0 (Range), -1 (Downtrend)
@@ -408,8 +409,8 @@ def causal_market_regime(df, ma_period=21, slope_smoothness=1, regime_min_durati
     # ma = HMA(df['Close'], timeperiod=ma_period)
     ma = EMA(df['Close'], timeperiod=ma_period)
 
-    # 2. Causal slope with smoothing (trailing)
-    slope = ma.diff()
+    # 2. Causal slope with smoothing (trailing) — normalized by MA level for price-scale invariance
+    slope = ma.diff() / ma
     slope_sm = super_smoother(slope, period=slope_smoothness)
 
     # 3. Directional regime by slope magnitude vs threshold
@@ -453,7 +454,15 @@ def causal_market_regime(df, ma_period=21, slope_smoothness=1, regime_min_durati
     regime_causal[low_vol] = 0
 
     # 7. Filter flat slope regimes to range (0)
-    flat_slope = slope_sm.abs() < slope_threshold
+    # Adaptive threshold: rolling percentile of past normalised slope magnitudes (causal)
+    slope_adaptive_thresh = (
+        slope_sm.abs()
+        .rolling(window=slope_lookback, min_periods=slope_lookback)
+        .quantile(slope_percentile / 100.0)
+    )
+    flat_slope = slope_sm.abs() < slope_adaptive_thresh.fillna(0)
+    if slope_threshold > 0:
+        flat_slope = flat_slope | (slope_sm.abs() < slope_threshold)
     regime_causal[flat_slope] = 0
 
     return regime_causal
