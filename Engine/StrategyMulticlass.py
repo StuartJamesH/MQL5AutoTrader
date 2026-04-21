@@ -453,9 +453,9 @@ class TripleBarrierHiLowMulticlass:
         if self.countdown > 0:
             self.countdown -= 1
 
-        # Restricted trading hours — skip new signals between 7:30 and 10:00 local time
+        # Restricted trading hours — skip new signals between 6:00 and 10:00 local time
         current_time = datetime.datetime.now().time()
-        restricted_start = datetime.time(7, 30)
+        restricted_start = datetime.time(6, 00)
         restricted_end = datetime.time(10, 0)
         in_restricted_hours = restricted_start <= current_time <= restricted_end
 
