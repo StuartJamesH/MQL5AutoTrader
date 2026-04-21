@@ -4,7 +4,72 @@ Provides :class:`Live_Engine`, the top-level orchestrator that drives the live
 trading loop by wiring together a data handler, a strategy, and an execution
 handler.
 """
+import logging
+import os
+import sys
 from datetime import datetime
+
+from dotenv import load_dotenv
+
+_LOG_FORMAT = "%(asctime)s  %(name)-30s  %(levelname)-8s  %(message)s"
+
+
+def configure_logging(log_file: str = "trading.log", cloud_log: bool = True) -> None:
+    """Configure root-level logging with a console handler, a local file handler,
+    and an optional second file handler that mirrors output to the Google Drive
+    directory specified by ``CLOUD_LOG_DIR`` in the project ``.env`` file.
+
+    Parameters
+    ----------
+    log_file:
+        Filename for the local log (relative to the current working directory).
+    cloud_log:
+        When ``True``, also write to ``{CLOUD_LOG_DIR}/{log_file}``.
+        If ``CLOUD_LOG_DIR`` is not set in ``.env`` a warning is emitted and
+        logging continues with only the local handlers.
+    """
+    load_dotenv()
+
+    handlers: list[logging.Handler] = [
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(log_file, encoding="utf-8"),
+    ]
+
+    if cloud_log:
+        cloud_dir = os.getenv("CLOUD_LOG_DIR")
+        if cloud_dir:
+            try:
+                os.makedirs(cloud_dir, exist_ok=True)
+                cloud_path = os.path.join(cloud_dir, log_file)
+                handlers.append(logging.FileHandler(cloud_path, encoding="utf-8"))
+            except OSError as exc:
+                # Don't prevent the bot from starting if the cloud path is unavailable
+                logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT,
+                                    handlers=[logging.StreamHandler(sys.stdout)])
+                logging.getLogger(__name__).warning(
+                    "Could not set up cloud log at '%s': %s — falling back to local only.",
+                    cloud_dir, exc,
+                )
+                handlers = [
+                    logging.StreamHandler(sys.stdout),
+                    logging.FileHandler(log_file, encoding="utf-8"),
+                ]
+        else:
+            # Configure temporarily so the warning itself is visible
+            logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT,
+                                handlers=[logging.StreamHandler(sys.stdout)])
+            logging.getLogger(__name__).warning(
+                "CLOUD_LOG=True but CLOUD_LOG_DIR is not set in .env — "
+                "logging to local file only."
+            )
+            handlers = [
+                logging.StreamHandler(sys.stdout),
+                logging.FileHandler(log_file, encoding="utf-8"),
+            ]
+            # Reset so basicConfig below takes effect cleanly
+            logging.root.handlers.clear()
+
+    logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, handlers=handlers)
 
 
 def _bar_time_as_utc(bar) -> datetime:
