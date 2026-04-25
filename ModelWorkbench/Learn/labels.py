@@ -719,6 +719,7 @@ def calculate_trade_outcomes_all_candles(
     atr_window=14,
     tp_mult=4.0,
     sl_mult=2.0,
+    max_horizon=None,
 ):
     """
     Calculate trade outcomes for BOTH buy and sell at every candle.
@@ -727,15 +728,13 @@ def calculate_trade_outcomes_all_candles(
     Outcome encoding:
     -  1: Take Profit hit
     - -1: Stop Loss hit
-    - NaN: Neither TP nor SL reached before the end of the dataset (unresolved,
-           typically only affects the last few bars). Callers should fillna(0.0).
+    - NaN: Neither TP nor SL reached within the horizon (unresolved).
+           Callers should fillna(0.0).
 
-    There is no time-based barrier: the function looks forward to the end of the
-    dataset so every resolved bar returns a clean binary outcome.  This ensures
-    the training-loop P&L simulation matches "act on every predicted signal and
-    count +1 per TP and -1 per SL."
-
-    OPTIMIZED: Uses NumPy array operations for ~10-100x speedup over nested loops.
+    max_horizon: maximum number of bars to look forward. If None, looks to the
+    end of the dataset. Setting this (e.g. to match the labeler's max_horizon)
+    keeps the function O(n * max_horizon) instead of O(n²), which is critical
+    for large datasets.
     """
     df = df.copy()
     df["atr"] = ATR(df['High'], df['Low'], df['Close'], timeperiod=atr_window)
@@ -755,9 +754,9 @@ def calculate_trade_outcomes_all_candles(
         if np.isnan(atr) or atr == 0:
             continue
 
-        # Look all the way to the last bar — no time boundary.
-        future_highs = highs[t0 + 1:]
-        future_lows  = lows[t0 + 1:]
+        t_end = (t0 + 1 + max_horizon) if max_horizon is not None else n
+        future_highs = highs[t0 + 1: t_end]
+        future_lows  = lows[t0 + 1: t_end]
 
         # --- BUY TRADE (Long) ---
         entry_buy = highs[t0]
