@@ -199,24 +199,21 @@ def build_data_pipeline(device):
         print(f'{name}: {rollover.sum()} rollover rows zeroed | target dist:')
         print(d['target'].value_counts().sort_index().rename({0: 'SELL', 1: 'FLAT', 2: 'BUY'}), '\n')
 
-    # Trade outcomes
+    # Trade outcomes — binary only: 1 = TP hit, -1 = SL hit, NaN = unresolved (fillna'd to 0)
     outcome_params = {k: v for k, v in label_params.items()
-                      if k in ['atr_window', 'tp_mult', 'sl_mult', 'max_horizon']}
-    outcome_params['max_horizon'] = 1000
+                      if k in ['atr_window', 'tp_mult', 'sl_mult']}
 
     for name, d in [('df', df), ('df_val', df_val)]:
         outcomes = calculate_trade_outcomes_all_candles(d, **outcome_params)
-        for col in ['buy_outcome', 'sell_outcome']:
-            outcomes[col] = outcomes[col].clip(upper=None).where(outcomes[col] <= 0, outcomes[col] * 2)
         d['sell_y'] = outcomes['sell_outcome'].fillna(0.0)
         d['buy_y']  = outcomes['buy_outcome'].fillna(0.0)
         print(f'{name} outcomes | '
-              f'Buy  TP:{(outcomes["buy_outcome"]  == 2).sum()} '
-              f'TO:{(outcomes["buy_outcome"]  == 0).sum()} '
-              f'SL:{(outcomes["buy_outcome"]  == -1).sum()} | '
-              f'Sell TP:{(outcomes["sell_outcome"] == 2).sum()} '
-              f'TO:{(outcomes["sell_outcome"] == 0).sum()} '
-              f'SL:{(outcomes["sell_outcome"] == -1).sum()}')
+              f'Buy  TP:{(outcomes["buy_outcome"]  == 1).sum()} '
+              f'SL:{(outcomes["buy_outcome"]  == -1).sum()} '
+              f'Unresolved:{outcomes["buy_outcome"].isna().sum()} | '
+              f'Sell TP:{(outcomes["sell_outcome"] == 1).sum()} '
+              f'SL:{(outcomes["sell_outcome"] == -1).sum()} '
+              f'Unresolved:{outcomes["sell_outcome"].isna().sum()}')
 
     # Features
     df     = FEATURES(df,     regime_params=regime_params)

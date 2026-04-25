@@ -719,113 +719,77 @@ def calculate_trade_outcomes_all_candles(
     atr_window=14,
     tp_mult=4.0,
     sl_mult=2.0,
-    max_horizon=60
 ):
     """
     Calculate trade outcomes for BOTH buy and sell at every candle.
     Returns DataFrame with columns: ['buy_outcome', 'sell_outcome', 'buy_exit_price', 'sell_exit_price']
-    
+
     Outcome encoding:
-    - 1: Take Profit hit
-    - 0: Timeout (vertical barrier)
+    -  1: Take Profit hit
     - -1: Stop Loss hit
-    
-    This allows model predictions to be evaluated at any candle, not just signal candles.
-    
+    - NaN: Neither TP nor SL reached before the end of the dataset (unresolved,
+           typically only affects the last few bars). Callers should fillna(0.0).
+
+    There is no time-based barrier: the function looks forward to the end of the
+    dataset so every resolved bar returns a clean binary outcome.  This ensures
+    the training-loop P&L simulation matches "act on every predicted signal and
+    count +1 per TP and -1 per SL."
+
     OPTIMIZED: Uses NumPy array operations for ~10-100x speedup over nested loops.
     """
     df = df.copy()
     df["atr"] = ATR(df['High'], df['Low'], df['Close'], timeperiod=atr_window)
-    
-    # Convert to numpy arrays for faster access
+
     highs = df['High'].values
-    lows = df['Low'].values
-    closes = df['Close'].values
-    atrs = df['atr'].values
-    
+    lows  = df['Low'].values
+    atrs  = df['atr'].values
+
     n = len(df)
-    buy_outcomes = np.full(n, np.nan)
-    sell_outcomes = np.full(n, np.nan)
-    buy_exit_prices = np.full(n, np.nan)
+    buy_outcomes     = np.full(n, np.nan)
+    sell_outcomes    = np.full(n, np.nan)
+    buy_exit_prices  = np.full(n, np.nan)
     sell_exit_prices = np.full(n, np.nan)
-    
-    # Process in batches for better cache locality
+
     for t0 in range(n - 1):
         atr = atrs[t0]
         if np.isnan(atr) or atr == 0:
             continue
-        
-        t_end = min(t0 + max_horizon, n - 1)
-        window_size = t_end - t0
-        
+
+        # Look all the way to the last bar — no time boundary.
+        future_highs = highs[t0 + 1:]
+        future_lows  = lows[t0 + 1:]
+
         # --- BUY TRADE (Long) ---
         entry_buy = highs[t0]
-        tp_buy = entry_buy + tp_mult * atr
-        sl_buy = entry_buy - sl_mult * atr
-        
-        # Get slice of future highs/lows
-        future_highs = highs[t0+1:t_end+1]
-        future_lows = lows[t0+1:t_end+1]
-        
-        # Find first TP or SL hit using vectorized operations
+        tp_buy    = entry_buy + tp_mult * atr
+        sl_buy    = entry_buy - sl_mult * atr
+
         tp_hit_buy = np.where(future_highs >= tp_buy)[0]
-        sl_hit_buy = np.where(future_lows <= sl_buy)[0]
-        
+        sl_hit_buy = np.where(future_lows  <= sl_buy)[0]
+
         if len(tp_hit_buy) > 0 and (len(sl_hit_buy) == 0 or tp_hit_buy[0] < sl_hit_buy[0]):
-            # TP hit first
-            buy_outcomes[t0] = 1
+            buy_outcomes[t0]    = 1
             buy_exit_prices[t0] = tp_buy
         elif len(sl_hit_buy) > 0:
-            # SL hit first
-            buy_outcomes[t0] = -1
+            buy_outcomes[t0]    = -1
             buy_exit_prices[t0] = sl_buy
-        else:
-            # Timeout
-            # Calculate fraction of profit/loss at vertical barrier
-            if closes[t_end] >= entry_buy:
-                target = tp_buy - entry_buy
-                actual = closes[t_end] - entry_buy
-                frc = actual / target if target != 0 else 0
-                buy_outcomes[t0] = min(frc, 1.0)
-            else:
-                target = entry_buy - sl_buy
-                actual = entry_buy - closes[t_end]
-                frc = actual / target if target != 0 else 0
-                buy_outcomes[t0] = -min(frc, 1.0)
-            # buy_outcomes[t0] = 1 if closes[t_end] >= entry_buy else -1
-            buy_exit_prices[t0] = closes[t_end]
-        
+        # else: neither hit before end of data → remains NaN
+
         # --- SELL TRADE (Short) ---
         entry_sell = lows[t0]
-        tp_sell = entry_sell - tp_mult * atr
-        sl_sell = entry_sell + sl_mult * atr
-        
-        # Find first TP or SL hit
-        tp_hit_sell = np.where(future_lows <= tp_sell)[0]
+        tp_sell    = entry_sell - tp_mult * atr
+        sl_sell    = entry_sell + sl_mult * atr
+
+        tp_hit_sell = np.where(future_lows  <= tp_sell)[0]
         sl_hit_sell = np.where(future_highs >= sl_sell)[0]
-        
+
         if len(tp_hit_sell) > 0 and (len(sl_hit_sell) == 0 or tp_hit_sell[0] < sl_hit_sell[0]):
-            # TP hit first
-            sell_outcomes[t0] = 1
+            sell_outcomes[t0]    = 1
             sell_exit_prices[t0] = tp_sell
         elif len(sl_hit_sell) > 0:
-            # SL hit first
-            sell_outcomes[t0] = -1
+            sell_outcomes[t0]    = -1
             sell_exit_prices[t0] = sl_sell
-        else:
-            # Timeout
-            if closes[t_end] <= entry_sell:
-                target = entry_sell - tp_sell
-                actual = entry_sell - closes[t_end]
-                frc = actual / target if target != 0 else 0
-                sell_outcomes[t0] = min(frc, 1.0)
-            else:
-                target = sl_sell - entry_sell
-                actual = closes[t_end] - entry_sell
-                frc = actual / target if target != 0 else 0
-                sell_outcomes[t0] = -min(frc, 1.0)
-            # sell_outcomes[t0] = 1 if closes[t_end] <= entry_sell else -1
-            sell_exit_prices[t0] = closes[t_end]
+        # else: neither hit before end of data → remains NaN
     
     return pd.DataFrame({
         'buy_outcome': buy_outcomes,

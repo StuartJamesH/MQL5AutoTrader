@@ -454,7 +454,7 @@
       "z_thresh": 1,
       "z_limit": 5,
       "atr_window": 14,
-      "tp_mult": 2.5,
+      "tp_mult": 3.0,
       "sl_mult": 2.0,
       "max_horizon": 90,
       "trend_pullback_thresh": 1.0,

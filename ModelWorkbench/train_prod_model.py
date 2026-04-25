@@ -77,9 +77,8 @@ label_params = {
     }
 
 outcome_params = {
-    k: v for k, v in label_params.items() if k in ["atr_window", "tp_mult", "sl_mult", "max_horizon"]
+    k: v for k, v in label_params.items() if k in ["atr_window", "tp_mult", "sl_mult"]
 }
-outcome_params["max_horizon"] = 1000
 
 lstm_model_params = {
     "input_dim": None,
@@ -213,15 +212,13 @@ def apply_multiclass_labels(df: pd.DataFrame, label_params_: dict | None = None,
 
 
 def add_outcomes(df: pd.DataFrame, outcome_params_: dict | None = None) -> pd.DataFrame:
+    # Outcomes are binary: 1 = TP hit, -1 = SL hit, NaN = unresolved (fillna'd to 0).
     op = outcome_params_ if outcome_params_ is not None else outcome_params
     d = df.copy()
     outcomes = calculate_trade_outcomes_all_candles(d, **op)
 
-    for col in ["buy_outcome", "sell_outcome"]:
-        outcomes[col] = outcomes[col].where(outcomes[col] <= 0, outcomes[col] * 2)
-
     d["sell_y"] = outcomes["sell_outcome"].fillna(0.0)
-    d["buy_y"] = outcomes["buy_outcome"].fillna(0.0)
+    d["buy_y"]  = outcomes["buy_outcome"].fillna(0.0)
     return d
 
 

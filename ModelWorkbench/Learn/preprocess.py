@@ -342,21 +342,6 @@ def filter_signals_profit(ohlc, pivot_col='Pivot', target_col='target', signal_l
         for _, i in df.iloc[p:,:].head(60).iterrows():
             
             if s == 1:
-                if i['High'] >= sl:
-                    df.at[p, 'exit_type'] = 'sl'
-                    df.at[p, 'exit_idx'] = _
-                    df.at[p, 'exit_price'] = sl
-                    df.at[p, 'exit_time'] = i['Time']
-                    df.at[p, 'exit_steps'] = _ - p
-                    break
-                elif i['Low'] <= tp:
-                    df.at[p, 'exit_type'] = 'tp'
-                    df.at[p, 'exit_idx'] = _
-                    df.at[p, 'exit_price'] = tp
-                    df.at[p, 'exit_time'] = i['Time']
-                    df.at[p, 'exit_steps'] = _ - p
-                    break
-            elif s == -1:
                 if i['Low'] <= sl:
                     df.at[p, 'exit_type'] = 'sl'
                     df.at[p, 'exit_idx'] = _
@@ -365,6 +350,21 @@ def filter_signals_profit(ohlc, pivot_col='Pivot', target_col='target', signal_l
                     df.at[p, 'exit_steps'] = _ - p
                     break
                 elif i['High'] >= tp:
+                    df.at[p, 'exit_type'] = 'tp'
+                    df.at[p, 'exit_idx'] = _
+                    df.at[p, 'exit_price'] = tp
+                    df.at[p, 'exit_time'] = i['Time']
+                    df.at[p, 'exit_steps'] = _ - p
+                    break
+            elif s == -1:
+                if i['High'] >= sl:
+                    df.at[p, 'exit_type'] = 'sl'
+                    df.at[p, 'exit_idx'] = _
+                    df.at[p, 'exit_price'] = sl
+                    df.at[p, 'exit_time'] = i['Time']
+                    df.at[p, 'exit_steps'] = _ - p
+                    break
+                elif i['Low'] <= tp:
                     df.at[p, 'exit_type'] = 'tp'
                     df.at[p, 'exit_idx'] = _
                     df.at[p, 'exit_price'] = tp

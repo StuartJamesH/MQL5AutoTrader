@@ -22,7 +22,7 @@ from Engine import Live_Engine
 from DataHandler import MT5DataHandler
 from Executor import MT5LiveExecutionHandler
 from TicketBook import TicketBook
-from StrategyMulticlass import TripleBarrierHiLowMulticlass
+from Strategy import TripleBarrierHiLowMulticlass
 
 
 # ---------------------------------------------------------------------------
