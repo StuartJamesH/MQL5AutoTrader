@@ -274,3 +274,322 @@ def fetch_trade_report(
     )
     summary = summarize_trade_history_by_symbol(trades, closed_only=closed_only)
     return trades, summary
+
+
+def build_position_pairs(trades: pd.DataFrame) -> pd.DataFrame:
+    """Pair IN and OUT deals into complete round-trip trades.
+
+    Returns one row per closed position with columns:
+    position_id, symbol, side, entry_time, exit_time,
+    entry_price, exit_price, volume, gross_pnl,
+    commission, swap, fee, net_pnl, duration_mins, result
+    """
+    if trades.empty:
+        return pd.DataFrame(
+            columns=[
+                "position_id", "symbol", "side", "entry_time", "exit_time",
+                "entry_price", "exit_price", "volume", "gross_pnl",
+                "commission", "swap", "fee", "net_pnl", "duration_mins", "result",
+            ]
+        )
+
+    entries = (
+        trades[trades["entry_type"] == "IN"]
+        .rename(columns={"time": "entry_time", "price": "entry_price"})
+        [["position_id", "symbol", "side", "entry_time", "entry_price", "volume",
+          "commission", "swap", "fee"]]
+        .copy()
+    )
+
+    exits = (
+        trades[trades["entry_type"].isin(["OUT", "OUT_BY", "INOUT"])]
+        .rename(columns={"time": "exit_time", "price": "exit_price", "profit": "gross_pnl"})
+        [["position_id", "exit_time", "exit_price", "gross_pnl",
+          "commission", "swap", "fee"]]
+        .copy()
+    )
+
+    merged = entries.merge(exits, on="position_id", suffixes=("_in", "_out"))
+
+    merged["commission"] = merged["commission_in"] + merged["commission_out"]
+    merged["swap"] = merged["swap_in"] + merged["swap_out"]
+    merged["fee"] = merged["fee_in"] + merged["fee_out"]
+    merged["net_pnl"] = merged["gross_pnl"] + merged["commission"] + merged["swap"] + merged["fee"]
+    merged["duration_mins"] = (
+        (merged["exit_time"] - merged["entry_time"]).dt.total_seconds() / 60
+    )
+    merged["result"] = merged["net_pnl"].apply(
+        lambda v: "win" if v > 0 else ("loss" if v < 0 else "breakeven")
+    )
+
+    cols = [
+        "position_id", "symbol", "side", "entry_time", "exit_time",
+        "entry_price", "exit_price", "volume", "gross_pnl",
+        "commission", "swap", "fee", "net_pnl", "duration_mins", "result",
+    ]
+    return merged[cols].sort_values("entry_time").reset_index(drop=True)
+
+
+def compute_trade_quality_metrics(pairs: pd.DataFrame) -> dict:
+    """Return profit factor, expectancy, win rate, payoff ratio, and commission stats."""
+    if pairs.empty:
+        return {
+            "trade_count": 0, "win_count": 0, "loss_count": 0, "win_rate": 0.0,
+            "profit_factor": 0.0, "expectancy": 0.0, "avg_win": 0.0, "avg_loss": 0.0,
+            "payoff_ratio": 0.0, "total_commission": 0.0, "commission_per_trade": 0.0,
+            "total_net_pnl": 0.0,
+        }
+
+    wins = pairs[pairs["result"] == "win"]["net_pnl"]
+    losses = pairs[pairs["result"] == "loss"]["net_pnl"]
+
+    total_win = wins.sum()
+    total_loss = abs(losses.sum())
+    avg_win = float(wins.mean()) if not wins.empty else 0.0
+    avg_loss = float(losses.mean()) if not losses.empty else 0.0
+    win_rate = len(wins) / len(pairs) if len(pairs) > 0 else 0.0
+    profit_factor = total_win / total_loss if total_loss != 0 else float("inf")
+    payoff_ratio = avg_win / abs(avg_loss) if avg_loss != 0 else float("inf")
+    total_commission = float(pairs["commission"].sum() + pairs["swap"].sum() + pairs["fee"].sum())
+
+    return {
+        "trade_count": int(len(pairs)),
+        "win_count": int(len(wins)),
+        "loss_count": int(len(losses)),
+        "win_rate": win_rate,
+        "profit_factor": profit_factor,
+        "expectancy": float(pairs["net_pnl"].mean()),
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "payoff_ratio": payoff_ratio,
+        "total_commission": total_commission,
+        "commission_per_trade": total_commission / len(pairs),
+        "total_net_pnl": float(pairs["net_pnl"].sum()),
+    }
+
+
+def equity_curve_and_drawdown(pairs: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Compute equity curve and drawdown from position pairs sorted by exit_time.
+
+    Returns (curve_df, metrics_dict).
+    curve_df columns: exit_time, net_pnl, equity, drawdown, drawdown_pct
+    metrics_dict keys: max_drawdown, max_drawdown_pct, final_equity, longest_drawdown_trades, calmar_ratio
+    """
+    if pairs.empty:
+        return pd.DataFrame(
+            columns=["exit_time", "net_pnl", "equity", "drawdown", "drawdown_pct"]
+        ), {
+            "max_drawdown": 0.0, "max_drawdown_pct": 0.0,
+            "final_equity": 0.0, "longest_drawdown_trades": 0, "calmar_ratio": 0.0,
+        }
+
+    df = pairs[["exit_time", "net_pnl"]].sort_values("exit_time").copy()
+    df["equity"] = df["net_pnl"].cumsum()
+    df["running_peak"] = df["equity"].cummax()
+    df["drawdown"] = df["equity"] - df["running_peak"]
+    df["drawdown_pct"] = df.apply(
+        lambda r: (r["drawdown"] / r["running_peak"] * 100) if r["running_peak"] != 0 else 0.0,
+        axis=1,
+    )
+
+    max_drawdown = float(df["drawdown"].min())
+    max_drawdown_pct = float(df["drawdown_pct"].min())
+    final_equity = float(df["equity"].iloc[-1])
+
+    # Longest consecutive drawdown streak
+    in_dd = (df["drawdown"] < 0).astype(int)
+    streak = longest = current = 0
+    for v in in_dd:
+        if v:
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+
+    calmar_ratio = final_equity / abs(max_drawdown) if max_drawdown != 0 else 0.0
+
+    curve_df = df[["exit_time", "net_pnl", "equity", "drawdown", "drawdown_pct"]].reset_index(drop=True)
+    metrics = {
+        "max_drawdown": max_drawdown,
+        "max_drawdown_pct": max_drawdown_pct,
+        "final_equity": final_equity,
+        "longest_drawdown_trades": longest,
+        "calmar_ratio": calmar_ratio,
+    }
+    return curve_df, metrics
+
+
+def compute_rolling_metrics(pairs: pd.DataFrame, window: int = 20) -> pd.DataFrame:
+    """Rolling win rate and average PnL over a sliding trade window."""
+    if pairs.empty:
+        return pd.DataFrame(columns=["exit_time", "net_pnl", "rolling_win_rate", "rolling_avg_pnl"])
+
+    df = pairs[["exit_time", "net_pnl"]].sort_values("exit_time").copy()
+    df["is_win"] = (pairs.sort_values("exit_time")["result"] == "win").values
+    df["rolling_win_rate"] = df["is_win"].rolling(window, min_periods=1).mean()
+    df["rolling_avg_pnl"] = df["net_pnl"].rolling(window, min_periods=1).mean()
+    return df[["exit_time", "net_pnl", "rolling_win_rate", "rolling_avg_pnl"]].reset_index(drop=True)
+
+
+def compute_hourly_performance(pairs: pd.DataFrame, tz: str = "UTC") -> pd.DataFrame:
+    """Aggregate performance by hour of day (entry time, all 24 hours present)."""
+    all_hours = pd.DataFrame({"hour": range(24)})
+    if pairs.empty:
+        return all_hours.assign(trade_count=0, win_rate=0.0, avg_pnl=0.0, total_pnl=0.0)
+
+    df = pairs.copy()
+    entry = pd.to_datetime(df["entry_time"])
+    if entry.dt.tz is None:
+        entry = entry.dt.tz_localize("UTC")
+    if tz != "UTC":
+        entry = entry.dt.tz_convert(tz)
+    df["hour"] = entry.dt.hour
+    df["is_win"] = df["result"] == "win"
+
+    agg = df.groupby("hour").agg(
+        trade_count=("net_pnl", "count"),
+        win_rate=("is_win", "mean"),
+        avg_pnl=("net_pnl", "mean"),
+        total_pnl=("net_pnl", "sum"),
+    ).reset_index()
+
+    result = all_hours.merge(agg, on="hour", how="left").fillna(
+        {"trade_count": 0, "win_rate": 0.0, "avg_pnl": 0.0, "total_pnl": 0.0}
+    )
+    result["trade_count"] = result["trade_count"].astype(int)
+    return result
+
+
+def compute_weekday_performance(pairs: pd.DataFrame, tz: str = "UTC") -> pd.DataFrame:
+    """Aggregate performance by day of week (entry time)."""
+    _day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    all_days = pd.DataFrame({"weekday_num": range(7), "weekday": _day_names})
+
+    if pairs.empty:
+        return all_days.assign(trade_count=0, win_rate=0.0, avg_pnl=0.0, total_pnl=0.0)
+
+    df = pairs.copy()
+    entry = pd.to_datetime(df["entry_time"])
+    if entry.dt.tz is None:
+        entry = entry.dt.tz_localize("UTC")
+    if tz != "UTC":
+        entry = entry.dt.tz_convert(tz)
+    df["weekday_num"] = entry.dt.dayofweek
+    df["is_win"] = df["result"] == "win"
+
+    agg = df.groupby("weekday_num").agg(
+        trade_count=("net_pnl", "count"),
+        win_rate=("is_win", "mean"),
+        avg_pnl=("net_pnl", "mean"),
+        total_pnl=("net_pnl", "sum"),
+    ).reset_index()
+
+    result = all_days.merge(agg, on="weekday_num", how="left").fillna(
+        {"trade_count": 0, "win_rate": 0.0, "avg_pnl": 0.0, "total_pnl": 0.0}
+    )
+    result["trade_count"] = result["trade_count"].astype(int)
+    return result.sort_values("weekday_num").reset_index(drop=True)
+
+
+def compute_side_performance(pairs: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate performance split by trade side (buy/sell)."""
+    if pairs.empty:
+        return pd.DataFrame(
+            columns=["side", "trade_count", "win_rate", "avg_pnl", "total_pnl", "avg_duration_mins"]
+        )
+
+    df = pairs.copy()
+    df["is_win"] = df["result"] == "win"
+
+    agg = df.groupby("side").agg(
+        trade_count=("net_pnl", "count"),
+        win_rate=("is_win", "mean"),
+        avg_pnl=("net_pnl", "mean"),
+        total_pnl=("net_pnl", "sum"),
+        avg_duration_mins=("duration_mins", "mean"),
+    ).reset_index()
+    return agg
+
+
+def compute_mae_mfe(
+    pairs: pd.DataFrame,
+    ohlcv: pd.DataFrame,
+    symbol: str | None = None,
+) -> pd.DataFrame:
+    """Compute Maximum Adverse Excursion (MAE) and Maximum Favorable Excursion (MFE)
+    for each completed trade using 1-minute OHLCV bars.
+
+    MAE = worst price move against the trade direction during the trade's lifetime (always <= 0 in price pts)
+    MFE = best price move in the trade direction during the trade's lifetime (always >= 0 in price pts)
+
+    For buys:  MAE = Low.min() - entry_price,  MFE = High.max() - entry_price
+    For sells: MAE = -(High.max() - entry_price), MFE = -(Low.min() - entry_price)
+
+    Returns DataFrame with columns:
+    position_id, side, entry_time, exit_time, duration_mins, net_pnl, result,
+    mae_pts, mfe_pts, entry_price, mfe_to_mae_ratio
+    """
+    import numpy as np
+
+    empty_cols = [
+        "position_id", "side", "entry_time", "exit_time", "duration_mins",
+        "net_pnl", "result", "mae_pts", "mfe_pts", "entry_price", "mfe_to_mae_ratio",
+    ]
+    if pairs.empty or ohlcv is None or ohlcv.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    working = pairs.copy()
+    if symbol is not None:
+        working = working[working["symbol"].str.startswith(symbol)].copy()
+    if working.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    # Ensure ohlcv index is tz-aware UTC
+    idx = ohlcv.index
+    if idx.tz is None:
+        idx = idx.tz_localize("UTC")
+    ohlcv_tz = ohlcv.copy()
+    ohlcv_tz.index = idx
+
+    rows = []
+    for _, trade in working.iterrows():
+        t0 = pd.Timestamp(trade["entry_time"])
+        t1 = pd.Timestamp(trade["exit_time"])
+        if t0.tz is None:
+            t0 = t0.tz_localize("UTC")
+        if t1.tz is None:
+            t1 = t1.tz_localize("UTC")
+
+        bars = ohlcv_tz.loc[t0:t1]
+        if bars.empty:
+            continue
+
+        ep = float(trade["entry_price"])
+        side = str(trade["side"]).lower() if trade["side"] else ""
+
+        if side == "buy":
+            mae_pts = float(bars["Low"].min()) - ep
+            mfe_pts = float(bars["High"].max()) - ep
+        else:
+            mae_pts = -(float(bars["High"].max()) - ep)
+            mfe_pts = -(float(bars["Low"].min()) - ep)
+
+        mfe_to_mae = mfe_pts / abs(mae_pts) if mae_pts != 0 else np.nan
+
+        rows.append({
+            "position_id": trade["position_id"],
+            "side": trade["side"],
+            "entry_time": trade["entry_time"],
+            "exit_time": trade["exit_time"],
+            "duration_mins": trade["duration_mins"],
+            "net_pnl": trade["net_pnl"],
+            "result": trade["result"],
+            "mae_pts": mae_pts,
+            "mfe_pts": mfe_pts,
+            "entry_price": ep,
+            "mfe_to_mae_ratio": mfe_to_mae,
+        })
+
+    if not rows:
+        return pd.DataFrame(columns=empty_cols)
+    return pd.DataFrame(rows, columns=empty_cols).reset_index(drop=True)
