@@ -1,6 +1,7 @@
 # launch_bots.ps1
-# Launches EURUSD and XAUUSD trading bots in separate terminal windows.
+# Launches EURUSD, US500 and XAUUSD trading bots in separate terminal windows.
 # Run from the project root:  .\launch_bots.ps1
+# Run files are not tracked. See Engine/run_multiclass.py for run template.
 
 $root   = $PSScriptRoot
 $python = Join-Path $root ".venv\Scripts\python.exe"
@@ -22,10 +23,10 @@ Start-Process powershell -ArgumentList `
     "-Command", `
     "& { `$host.UI.RawUI.WindowTitle = 'BOT - XAUUSD'; Set-Location '$root'; & '$python' 'Engine/.run_XAUUSD.py' }"
 
-# Write-Host "Launching US2000 bot..." -ForegroundColor Red
-# Start-Process powershell -ArgumentList `
-#     "-NoExit", `
-#     "-Command", `
-#     "& { `$host.UI.RawUI.WindowTitle = 'BOT - US2000'; Set-Location '$root'; & '$python' 'Engine/.run_US2000.py' }"
+Write-Host "Launching US500 bot..." -ForegroundColor Red
+Start-Process powershell -ArgumentList `
+    "-NoExit", `
+    "-Command", `
+    "& { `$host.UI.RawUI.WindowTitle = 'BOT - US500'; Set-Location '$root'; & '$python' 'Engine/.run_US500.py' }"
 
-Write-Host "Both bots launched in separate windows." -ForegroundColor Green
+Write-Host "All bots launched in separate windows." -ForegroundColor Green
