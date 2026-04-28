@@ -28,19 +28,20 @@ from Learn.Loss import TradeProfitabilityLoss
 # -----------------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------------
-DS_NAME = "data/EURUSD_M1_520weeks.csv"
+DS_NAME = "data/US500_M1_520weeks.csv"
 N_ROWS = None
-FEATURES = _add_features_EURUSD
+FEATURES = _add_features_US500
 
 # Use a fixed recent tail for validation; train on everything before it.
-VAL_BARS = 10_000
+VAL_BARS = 50_000
 MIN_TRAIN_ROWS = 20_000
 
 SEQ_LEN = 256
 BATCH_SIZE = 512
 NUM_EPOCHS = 30
+PATIENCE = 7        # early-stop after this many epochs without val-loss improvement
 BASE_LR = 1e-4
-WEIGHT_DECAY = 5e-4
+WEIGHT_DECAY = 1e-6
 
 ROLLOVER_WINDOW = ("21:30", "22:00")
 TRADING_HOURS = None
@@ -115,9 +116,9 @@ loss_params_template = {
     'alpha':             None,
     'gamma':             2.5,
     'trade_classes':     (0, 2),
-    'pr_weight':         10.0,   # primary precision lever
+    'pr_weight':         12.0,   # primary precision lever
     'recall_floor':      0.20,   # hinge activates below this recall per class
-    'rec_floor_weight':  20.0,   # quadratic hinge strength
+    'rec_floor_weight':  60.0,   # quadratic hinge strength
     'direction_penalty': 1.5,    # SELL↔BUY confusion cost
     'eps':               1e-6,
 }
@@ -213,9 +214,13 @@ def apply_multiclass_labels(df: pd.DataFrame, label_params_: dict | None = None,
 
 def add_outcomes(df: pd.DataFrame, outcome_params_: dict | None = None) -> pd.DataFrame:
     # Outcomes are binary: 1 = TP hit, -1 = SL hit, NaN = unresolved (fillna'd to 0).
+    # TP outcomes are doubled to reflect the asymmetric reward of letting winners run.
     op = outcome_params_ if outcome_params_ is not None else outcome_params
     d = df.copy()
     outcomes = calculate_trade_outcomes_all_candles(d, **op)
+
+    for col in ["buy_outcome", "sell_outcome"]:
+        outcomes[col] = outcomes[col].where(outcomes[col] <= 0, outcomes[col] * 2)
 
     d["sell_y"] = outcomes["sell_outcome"].fillna(0.0)
     d["buy_y"]  = outcomes["buy_outcome"].fillna(0.0)
@@ -457,8 +462,15 @@ def main() -> None:
         df_val["target"].value_counts(normalize=True).sort_index().to_dict(),
     )
 
-    df_train = _features_fn(df_train, regime_params=_regime_params)
-    df_val   = _features_fn(df_val,   regime_params=_regime_params)
+    # include_mtf=True enables higher-timeframe features where supported.
+    # Wrap in try/except for backward compatibility when resuming from old packs
+    # whose stored feature function may not accept the include_mtf kwarg.
+    try:
+        df_train = _features_fn(df_train, include_mtf=True, regime_params=_regime_params)
+        df_val   = _features_fn(df_val,   include_mtf=True, regime_params=_regime_params)
+    except TypeError:
+        df_train = _features_fn(df_train, regime_params=_regime_params)
+        df_val   = _features_fn(df_val,   regime_params=_regime_params)
 
     _resume_scaler = resume_pack["scaler"] if resume_pack else None
     data_pack = build_dataloaders(df_train, df_val, logger, resume_scaler=_resume_scaler, seq_len=_seq_len)
@@ -538,6 +550,7 @@ def main() -> None:
         "best_epoch": -1,
     }
     best_model_state = None
+    epochs_no_improve = 0
 
     logger.info("Training start | epochs=%d | batches train=%d val=%d", NUM_EPOCHS, len(data_pack["train_loader"]), len(data_pack["val_loader"]))
 
@@ -585,8 +598,10 @@ def main() -> None:
                 history["best_epoch"] = epoch
                 best_model_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
                 best_tag = " <-- best"
+                epochs_no_improve = 0
             else:
                 best_tag = ""
+                epochs_no_improve += 1
 
             logger.info(
                 "Epoch %d | train_loss=%.6f val_loss=%.6f acc=%.4f profit=%.2f (SELL %.2f | BUY %.2f)%s",
@@ -599,6 +614,14 @@ def main() -> None:
                 eval_pack["profit_buy"],
                 best_tag,
             )
+
+            if epochs_no_improve >= PATIENCE:
+                logger.info(
+                    "Early stopping: no val-loss improvement for %d epochs (patience=%d). "
+                    "Best epoch was %d.",
+                    epochs_no_improve, PATIENCE, history["best_epoch"],
+                )
+                break
 
     except KeyboardInterrupt:
         logger.warning("Training interrupted by user — saving best checkpoint so far (epoch %d).", history["best_epoch"])
