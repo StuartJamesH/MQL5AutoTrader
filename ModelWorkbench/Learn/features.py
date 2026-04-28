@@ -1268,140 +1268,6 @@ def add_price_features(df: pd.DataFrame, regime_params=None) -> pd.DataFrame:
 
     return df 
 
-def _add_features_US500(df: pd.DataFrame, include_mtf: bool = False, regime_params: dict = None) -> pd.DataFrame:
-    """
-    Add the features selected for US500 by the Feature ML Lab.
-    Generated automatically — edit with care.
-
-    Pass regime_params to enable the causal market regime feature (fl_regime).
-
-    Selected features (89 total):
-        fl_regime, fl_hma20_vs_ema21, fl_aroon_osc_14, fl_rsi_14, fl_stochrsi_14,
-    fl_close_vs_ema8, fl_momentum_vote, fl_donchian_trend_5, fl_macd_hist_norm,
-    fl_pct_from_low_60, fl_ema_vote, fl_donchian_trend_60, fl_hl_range_atr,
-    fl_rv_10, fl_session_london, fl_range_contract, fl_ema21_50_diff,
-    fl_macd_hist_slope_5, fl_stoch_kd_diff, fl_price_loc_128,
-    fl_time_in_trend_20, fl_session_ny, fl_stoch_k, fl_roc_10,
-    fl_pct_from_high_60, fl_rsi14_slope_3,
-    fl_pct_from_high_20, fl_di_minus, fl_session_tokyo, fl_inside_bar,
-    fl_lower_wick, fl_roc_5, fl_trix_14, fl_force_index_13, fl_di_plus,
-    fl_body_atr, fl_ichi_senA_vs_senB, fl_er_60, fl_donchian_trend_20,
-    fl_ret_lag_2, fl_L_rel, fl_dow_cos, fl_slope_60, fl_ichi_tk_diff,
-    fl_obv_slope_10, fl_ret_3, fl_pp_pos, fl_squeeze_mom, fl_rv_ratio_5_20,
-    fl_price_loc_256, fl_ema50_200_diff, fl_mfi_14, fl_adx14, fl_close_loc,
-    fl_bb_width_20, fl_H_rel, fl_cdl_shooting_str, fl_er_14, fl_er_30,
-    fl_pct_from_low_20, fl_hour_cos, fl_rv_ratio_20_60, fl_session_overlap,
-    fl_gap_open_atr, fl_atr_ratio_14, fl_vol_direction, fl_cmf_20,
-    fl_range_vs_atr5, fl_rv_60, fl_run_len, fl_cdl_engulf_bull,
-    fl_body_to_range, fl_hl_range, fl_squeeze, fl_cdl_harami, fl_upper_wick,
-    fl_dow_sin, fl_cdl_evening_star, fl_time_in_trend_5, fl_hour_sin,
-    fl_log_volume, fl_ret_lag_5, fl_cdl_morning_star, fl_nvi_z, fl_volume_z,
-    fl_cdl_doji, fl_outside_bar
-    """
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', pd.errors.PerformanceWarning)
-        df = add_feature_library(df, include_mtf=include_mtf, regime_params=regime_params)
-    df = df.copy()
-
-    _keep = [
-        c for c in [
-        'fl_regime',
-        'fl_hma20_vs_ema21',
-        'fl_aroon_osc_14',
-        'fl_rsi_14',
-        'fl_stochrsi_14',
-        'fl_close_vs_ema8',
-        'fl_momentum_vote',
-        'fl_donchian_trend_5',
-        'fl_macd_hist_norm',
-        'fl_pct_from_low_60',
-        'fl_ema_vote',
-        'fl_donchian_trend_60',
-        'fl_hl_range_atr',
-        'fl_rv_10',
-        'fl_session_london',
-        'fl_range_contract',
-        'fl_ema21_50_diff',
-        'fl_macd_hist_slope_5',
-        'fl_stoch_kd_diff',
-        'fl_price_loc_128',
-        'fl_time_in_trend_20',
-        'fl_session_ny',
-        'fl_stoch_k',
-        'fl_roc_10',
-        'fl_pct_from_high_60',
-        'fl_rsi14_slope_3',
-        'fl_pct_from_high_20',
-        'fl_di_minus',
-        'fl_session_tokyo',
-        'fl_inside_bar',
-        'fl_lower_wick',
-        'fl_roc_5',
-        'fl_trix_14',
-        'fl_force_index_13',
-        'fl_di_plus',
-        'fl_body_atr',
-        'fl_ichi_senA_vs_senB',
-        'fl_er_60',
-        'fl_donchian_trend_20',
-        'fl_ret_lag_2',
-        'fl_L_rel',
-        'fl_dow_cos',
-        'fl_slope_60',
-        'fl_ichi_tk_diff',
-        'fl_obv_slope_10',
-        'fl_ret_3',
-        'fl_pp_pos',
-        'fl_squeeze_mom',
-        'fl_rv_ratio_5_20',
-        'fl_price_loc_256',
-        'fl_ema50_200_diff',
-        'fl_mfi_14',
-        'fl_adx14',
-        'fl_close_loc',
-        'fl_bb_width_20',
-        'fl_H_rel',
-        'fl_cdl_shooting_str',
-        'fl_er_14',
-        'fl_er_30',
-        'fl_pct_from_low_20',
-        'fl_hour_cos',
-        'fl_rv_ratio_20_60',
-        'fl_session_overlap',
-        'fl_gap_open_atr',
-        'fl_atr_ratio_14',
-        'fl_vol_direction',
-        'fl_cmf_20',
-        'fl_range_vs_atr5',
-        'fl_rv_60',
-        'fl_run_len',
-        'fl_cdl_engulf_bull',
-        'fl_body_to_range',
-        'fl_hl_range',
-        'fl_squeeze',
-        'fl_cdl_harami',
-        'fl_upper_wick',
-        'fl_dow_sin',
-        'fl_cdl_evening_star',
-        'fl_time_in_trend_5',
-        'fl_hour_sin',
-        'fl_log_volume',
-        'fl_ret_lag_5',
-        'fl_cdl_morning_star',
-        'fl_nvi_z',
-        'fl_volume_z',
-        'fl_cdl_doji',
-        'fl_outside_bar',
-        ]
-        if c in df.columns
-    ]
-    # Retain OHLCV + Time columns alongside features
-    _ohlcv = [c for c in ['Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'target', 'sell_y', 'buy_y']
-              if c in df.columns]
-    _final = _ohlcv + [c for c in _keep if c not in _ohlcv]
-    return df[_final]
-
-
 def _add_features_EURUSD(df: pd.DataFrame, include_mtf: bool = False, regime_params: dict = None) -> pd.DataFrame:
     """
     Add the features selected for EURUSD by the Feature ML Lab.
@@ -2003,6 +1869,171 @@ def _add_features_SpotCrude(df: pd.DataFrame, include_mtf: bool = False, regime_
         'fl_cdl_inv_hammer',
         'fl_session_tokyo',
         'MTF_15min_donchian_trend',
+        ]
+        if c in df.columns
+    ]
+    # Retain OHLCV + Time columns alongside features
+    _ohlcv = [c for c in ['Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'target', 'sell_y', 'buy_y']
+              if c in df.columns]
+    _final = _ohlcv + [c for c in _keep if c not in _ohlcv]
+    return df[_final]
+
+
+def _add_features_US500(df: pd.DataFrame, include_mtf: bool = False, regime_params: dict = None) -> pd.DataFrame:
+    """
+    Add the features selected for US500 by the Feature ML Lab.
+    Generated automatically — edit with care.
+
+    Pass regime_params to enable the causal market regime feature (fl_regime).
+
+    Selected features (113 total):
+        fl_regime, fl_rsi_14, fl_close_vs_ema8, fl_aroon_osc_14, fl_hl_range_atr,
+    fl_stochrsi_14, fl_momentum_vote, fl_hma20_vs_ema21, fl_pct_from_high_60,
+    MTF_15min_ll, fl_macd_hist_norm, fl_price_loc_128, fl_stoch_kd_diff,
+    fl_donchian_trend_60, fl_body_atr, fl_range_contract, fl_stoch_k,
+    fl_ema_vote, MTF_5min_trend, fl_donchian_trend_5, fl_pct_from_low_60,
+    fl_macd_hist_slope_5, MTF_5min_ema_dist, MTF_15min_hh, fl_rsi14_slope_3,
+    fl_di_minus, fl_rv_10, fl_bb_width_20, MTF_5min_ll, MTF_30min_ll,
+    fl_di_plus, fl_obv_slope_10, fl_session_london, MTF_5min_hh, fl_H_rel,
+    fl_cdl_harami, MTF_30min_hh, fl_roc_10, MTF_5min_slope, fl_ret_5,
+    fl_donchian_pressure_60, fl_force_index_13, fl_price_loc_256,
+    MTF_15min_ema_dist, fl_ichi_tk_diff, fl_er_60, fl_pct_from_high_20,
+    fl_time_in_trend_20, MTF_5min_donchian_trend, fl_rv_ratio_5_20,
+    fl_session_ny, fl_ema50_200_diff, fl_body_to_range, fl_range_vs_atr5,
+    fl_ret_lag_2, fl_lower_wick, fl_volume_z, fl_outside_bar, fl_dow_cos,
+    fl_ret_3, fl_er_14, fl_close_loc, fl_pct_from_low_20, fl_hour_cos, fl_adx14,
+    MTF_15min_roc, fl_squeeze_mom, fl_mfi_14, fl_rv_ratio_20_60, MTF_5min_adx,
+    fl_log_volume, fl_atr_ratio_14, fl_session_overlap, fl_L_rel,
+    MTF_15min_time_in_trend, fl_hl_range, MTF_30min_adx, fl_session_tokyo,
+    fl_cdl_engulf_bull, fl_cdl_inv_hammer, fl_donchian_trend_20,
+    fl_cdl_morning_star, MTF_15min_trend, MTF_15min_donchian_trend,
+    MTF_30min_donchian_trend, fl_ret_60, fl_ret_20, fl_pp_pos,
+    fl_ichi_senA_vs_senB, MTF_30min_rsi, fl_er_30, fl_time_in_trend_60,
+    fl_hour_sin, MTF_30min_time_in_trend, fl_cmf_20, fl_vol_direction,
+    MTF_15min_adx, fl_rv_60, fl_nvi_z, fl_parkinson_20, fl_upper_wick,
+    fl_run_len, fl_cdl_piercing, fl_ret_lag_4, fl_ret_lag_3, fl_squeeze,
+    fl_cdl_doji, fl_cdl_shooting_str, fl_cdl_hammer, fl_cdl_evening_star,
+    fl_dow_sin, fl_inside_bar, MTF_30min_trend
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', pd.errors.PerformanceWarning)
+        df = add_feature_library(df, include_mtf=include_mtf, regime_params=regime_params)
+    df = df.copy()
+    _keep = [
+        c for c in [
+        'fl_regime',
+        'fl_rsi_14',
+        'fl_close_vs_ema8',
+        'fl_aroon_osc_14',
+        'fl_hl_range_atr',
+        'fl_stochrsi_14',
+        'fl_momentum_vote',
+        'fl_hma20_vs_ema21',
+        'fl_pct_from_high_60',
+        'MTF_15min_ll',
+        'fl_macd_hist_norm',
+        'fl_price_loc_128',
+        'fl_stoch_kd_diff',
+        'fl_donchian_trend_60',
+        'fl_body_atr',
+        'fl_range_contract',
+        'fl_stoch_k',
+        'fl_ema_vote',
+        'MTF_5min_trend',
+        'fl_donchian_trend_5',
+        'fl_pct_from_low_60',
+        'fl_macd_hist_slope_5',
+        'MTF_5min_ema_dist',
+        'MTF_15min_hh',
+        'fl_rsi14_slope_3',
+        'fl_di_minus',
+        'fl_rv_10',
+        'fl_bb_width_20',
+        'MTF_5min_ll',
+        'MTF_30min_ll',
+        'fl_di_plus',
+        'fl_obv_slope_10',
+        'fl_session_london',
+        'MTF_5min_hh',
+        'fl_H_rel',
+        'fl_cdl_harami',
+        'MTF_30min_hh',
+        'fl_roc_10',
+        'MTF_5min_slope',
+        'fl_ret_5',
+        'fl_donchian_pressure_60',
+        'fl_force_index_13',
+        'fl_price_loc_256',
+        'MTF_15min_ema_dist',
+        'fl_ichi_tk_diff',
+        'fl_er_60',
+        'fl_pct_from_high_20',
+        'fl_time_in_trend_20',
+        'MTF_5min_donchian_trend',
+        'fl_rv_ratio_5_20',
+        'fl_session_ny',
+        'fl_ema50_200_diff',
+        'fl_body_to_range',
+        'fl_range_vs_atr5',
+        'fl_ret_lag_2',
+        'fl_lower_wick',
+        'fl_volume_z',
+        'fl_outside_bar',
+        'fl_dow_cos',
+        'fl_ret_3',
+        'fl_er_14',
+        'fl_close_loc',
+        'fl_pct_from_low_20',
+        'fl_hour_cos',
+        'fl_adx14',
+        'MTF_15min_roc',
+        'fl_squeeze_mom',
+        'fl_mfi_14',
+        'fl_rv_ratio_20_60',
+        'MTF_5min_adx',
+        'fl_log_volume',
+        'fl_atr_ratio_14',
+        'fl_session_overlap',
+        'fl_L_rel',
+        'MTF_15min_time_in_trend',
+        'fl_hl_range',
+        'MTF_30min_adx',
+        'fl_session_tokyo',
+        'fl_cdl_engulf_bull',
+        'fl_cdl_inv_hammer',
+        'fl_donchian_trend_20',
+        'fl_cdl_morning_star',
+        'MTF_15min_trend',
+        'MTF_15min_donchian_trend',
+        'MTF_30min_donchian_trend',
+        'fl_ret_60',
+        'fl_ret_20',
+        'fl_pp_pos',
+        'fl_ichi_senA_vs_senB',
+        'MTF_30min_rsi',
+        'fl_er_30',
+        'fl_time_in_trend_60',
+        'fl_hour_sin',
+        'MTF_30min_time_in_trend',
+        'fl_cmf_20',
+        'fl_vol_direction',
+        'MTF_15min_adx',
+        'fl_rv_60',
+        'fl_nvi_z',
+        'fl_parkinson_20',
+        'fl_upper_wick',
+        'fl_run_len',
+        'fl_cdl_piercing',
+        'fl_ret_lag_4',
+        'fl_ret_lag_3',
+        'fl_squeeze',
+        'fl_cdl_doji',
+        'fl_cdl_shooting_str',
+        'fl_cdl_hammer',
+        'fl_cdl_evening_star',
+        'fl_dow_sin',
+        'fl_inside_bar',
+        'MTF_30min_trend',
         ]
         if c in df.columns
     ]
