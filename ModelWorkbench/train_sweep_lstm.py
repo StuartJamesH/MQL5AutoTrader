@@ -403,15 +403,19 @@ def train_one_config(cfg, data, device):
 
         # Validate
         model.eval()
-        val_loss = 0.0
+        val_loss_total = 0.0
+        val_n_samples  = 0
         all_preds, all_targets, all_outcomes = [], [], []
         with torch.no_grad():
             for xb, yb, outcome_b in val_loader:
                 xb, yb = xb.to(device), yb.to(device)
                 outcome_b = outcome_b.to(device) if isinstance(outcome_b, torch.Tensor) else outcome_b
                 with torch.amp.autocast('cuda', enabled=use_amp):
-                    logits    = model(xb)
-                    val_loss += criterion(logits, yb, outcome_b).item()
+                    logits     = model(xb)
+                    batch_loss = criterion(logits, yb, outcome_b).item()
+                bs = yb.size(0)
+                val_loss_total += batch_loss * bs   # weight by batch size (matches prod script)
+                val_n_samples  += bs
                 preds = torch.argmax(logits, dim=1)
                 all_preds.extend(preds.cpu().numpy())
                 all_targets.extend(yb.cpu().numpy())
@@ -429,7 +433,7 @@ def train_one_config(cfg, data, device):
         profit_buy  = float(buy_net[buy_mask].sum())   if buy_mask.any()  else 0.0
         profit      = profit_sell + profit_buy
 
-        val_loss_value = val_loss / len(all_targets)
+        val_loss_value = val_loss_total / max(1, val_n_samples)
         acc = accuracy_score(all_targets, all_preds)
 
         if val_loss_value < best_val_loss:
