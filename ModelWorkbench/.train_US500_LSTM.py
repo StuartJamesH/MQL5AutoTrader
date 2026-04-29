@@ -36,10 +36,10 @@ MIN_TRAIN_ROWS = 20_000
 
 SEQ_LEN = 256
 BATCH_SIZE = 512
-NUM_EPOCHS = 30
+NUM_EPOCHS = 20
 PATIENCE = 10        # early-stop after this many epochs without val-loss improvement
-BASE_LR = 1e-4
-WEIGHT_DECAY = 1e-4
+BASE_LR = 5e-5
+WEIGHT_DECAY = 2e-4
 
 ROLLOVER_WINDOW = ("21:30", "22:00")
 TRADING_HOURS = None
@@ -98,11 +98,11 @@ tcn_model_params = None
 
 loss_params_template = {
     'alpha':             None,
-    'gamma':             2.5,
+    'gamma':             2.0,   # reduced 2.5→2.0: hard examples at 2% class rate are often noise
     'trade_classes':     (0, 2),
-    'pr_weight':         12.0,   # sweep best (was 10.0) — aligns with 26Apr configs
+    'pr_weight':         10.0,   # reduced 12.0→10.0: SELL precision already at 0.355 target; releasing gradient budget for recall
     'recall_floor':      0.15,   # hinge activates below this recall per class
-    'rec_floor_weight':  60.0,   # CRITICAL: was 20.0 — 3× stronger floor penalty; drives recall above 0.15
+    'rec_floor_weight':  90.0,   # raised 60→90: recall_sell=0.100 at best epoch (ep6) — hinge penalty only 1.78% of val_loss at w=60; 50% increase to 2.67% to overcome L2 suppression of minority-class gradients
     'direction_penalty': 1.5,    # SELL↔BUY confusion cost
     'eps':               1e-6,
 }
@@ -483,7 +483,7 @@ def main() -> None:
     criterion = TradeProfitabilityLoss(**loss_params)
     optimizer = torch.optim.AdamW(model.parameters(), lr=BASE_LR, weight_decay=WEIGHT_DECAY)
 
-    warmup_steps = 400
+    warmup_steps = 1500
     total_steps = max(1, len(data_pack["train_loader"]) * NUM_EPOCHS)
 
     def lr_lambda(step: int) -> float:
@@ -514,6 +514,7 @@ def main() -> None:
         "best_pnl_epoch": -1,
     }
     best_model_state = None
+    best_pnl_model_state = None
     epochs_no_improve = 0
 
     logger.info("Training start | epochs=%d | batches train=%d val=%d", NUM_EPOCHS, len(data_pack["train_loader"]), len(data_pack["val_loader"]))
@@ -570,6 +571,7 @@ def main() -> None:
             if eval_pack["profit"] > history["best_pnl"]:
                 history["best_pnl"] = eval_pack["profit"]
                 history["best_pnl_epoch"] = epoch
+                best_pnl_model_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
             logger.info(
                 "Epoch %d | train_loss=%.6f val_loss=%.6f acc=%.4f profit=%.2f (SELL %.2f | BUY %.2f)%s",
@@ -636,64 +638,62 @@ def main() -> None:
     loss_params_serializable = {**loss_params, "alpha": loss_params["alpha"].cpu().tolist()}
 
     model_pack_path = resume_model_pack_path if resume_pack else OUTPUT_DIR / f"{model_name}_model.pkl"
+    model_pack = {
+        "model": model.state_dict(),
+        "model_class": model_cls,
+        "model_class_source": inspect.getsource(model_cls),
+        "model_params": model_params_local,
+        "model_info": model_info,
+        "features": data_pack["features"],
+        "feature_count": data_pack["X_train"].shape[1],
+        "feature_function": _features_fn,
+        "feature_function_source": inspect.getsource(_features_fn),
+        "preprocess_function": preprocess_ohlcv,
+        "preprocess_function_source": inspect.getsource(preprocess_ohlcv),
+        "preprocess_args": data_pack["preprocess_ohlcv_args"],
+        "scaler": data_pack["scaler"],
+        "label_function": causal_triple_barrier_hilow_trend_labeler,
+        "label_function_source": inspect.getsource(causal_triple_barrier_hilow_trend_labeler),
+        "label_params": _label_params,
+        "regime_params": _regime_params,
+        "outcome_params": _outcome_params,
+        "rollover_window": _rollover_window,
+        "input_shape": (_seq_len, data_pack["X_train"].shape[1]),
+        "loss_params": loss_params_serializable,
+        "loss_function": TradeProfitabilityLoss,
+        "loss_function_source": inspect.getsource(TradeProfitabilityLoss),
+        "data_split": {
+            "split_method": "tail_val_bars",
+            "val_bars": VAL_BARS,
+            "train_rows": len(data_pack["X_train"]),
+            "val_rows": len(data_pack["X_val"]),
+            "train_end_time": str(df_train_raw["Time"].iloc[-1]),
+            "val_start_time": str(df_val_raw["Time"].iloc[0]),
+        },
+        "torch_version": torch.__version__,
+        "val_metrics": {
+            "final_f1_sell": history["f1_sell"][-1],
+            "final_f1_buy": history["f1_buy"][-1],
+            "final_precision_sell": history["prec_sell"][-1],
+            "final_precision_buy": history["prec_buy"][-1],
+            "final_recall_sell": history["rec_sell"][-1],
+            "final_recall_buy": history["rec_buy"][-1],
+            "final_profit": history["pnl"][-1],
+            "best_f1_sell": max(history["f1_sell"]),
+            "best_f1_buy": max(history["f1_buy"]),
+            "best_precision_sell": max(history["prec_sell"]),
+            "best_precision_buy": max(history["prec_buy"]),
+            "f1_sell_curve": history["f1_sell"],
+            "f1_buy_curve": history["f1_buy"],
+            "precision_sell_curve": history["prec_sell"],
+            "precision_buy_curve": history["prec_buy"],
+            "recall_sell_curve": history["rec_sell"],
+            "recall_buy_curve": history["rec_buy"],
+            "pnl_curve": history["pnl"],
+        },
+    }
     with open(model_pack_path, "wb") as f:
-        pickle.dump(
-            {
-                "model": model.state_dict(),
-                "model_class": model_cls,
-                "model_class_source": inspect.getsource(model_cls),
-                "model_params": model_params_local,
-                "model_info": model_info,
-                "features": data_pack["features"],
-                "feature_count": data_pack["X_train"].shape[1],
-                "feature_function": _features_fn,
-                "feature_function_source": inspect.getsource(_features_fn),
-                "preprocess_function": preprocess_ohlcv,
-                "preprocess_function_source": inspect.getsource(preprocess_ohlcv),
-                "preprocess_args": data_pack["preprocess_ohlcv_args"],
-                "scaler": data_pack["scaler"],
-                "label_function": causal_triple_barrier_hilow_trend_labeler,
-                "label_function_source": inspect.getsource(causal_triple_barrier_hilow_trend_labeler),
-                "label_params": _label_params,
-                "regime_params": _regime_params,
-                "outcome_params": _outcome_params,
-                "rollover_window": _rollover_window,
-                "input_shape": (_seq_len, data_pack["X_train"].shape[1]),
-                "loss_params": loss_params_serializable,
-                "loss_function": TradeProfitabilityLoss,
-                "loss_function_source": inspect.getsource(TradeProfitabilityLoss),
-                "data_split": {
-                    "split_method": "tail_val_bars",
-                    "val_bars": VAL_BARS,
-                    "train_rows": len(data_pack["X_train"]),
-                    "val_rows": len(data_pack["X_val"]),
-                    "train_end_time": str(df_train_raw["Time"].iloc[-1]),
-                    "val_start_time": str(df_val_raw["Time"].iloc[0]),
-                },
-                "torch_version": torch.__version__,
-                "val_metrics": {
-                    "final_f1_sell": history["f1_sell"][-1],
-                    "final_f1_buy": history["f1_buy"][-1],
-                    "final_precision_sell": history["prec_sell"][-1],
-                    "final_precision_buy": history["prec_buy"][-1],
-                    "final_recall_sell": history["rec_sell"][-1],
-                    "final_recall_buy": history["rec_buy"][-1],
-                    "final_profit": history["pnl"][-1],
-                    "best_f1_sell": max(history["f1_sell"]),
-                    "best_f1_buy": max(history["f1_buy"]),
-                    "best_precision_sell": max(history["prec_sell"]),
-                    "best_precision_buy": max(history["prec_buy"]),
-                    "f1_sell_curve": history["f1_sell"],
-                    "f1_buy_curve": history["f1_buy"],
-                    "precision_sell_curve": history["prec_sell"],
-                    "precision_buy_curve": history["prec_buy"],
-                    "recall_sell_curve": history["rec_sell"],
-                    "recall_buy_curve": history["rec_buy"],
-                    "pnl_curve": history["pnl"],
-                },
-            },
-            f,
-        )
+        pickle.dump(model_pack, f)
 
     summary = {
         "model_name": model_name,
@@ -747,6 +747,35 @@ def main() -> None:
 
     logger.info("Saved model pack: %s", model_pack_path)
     logger.info("Saved summary JSON: %s", summary_path)
+
+    # --- Save PnL-best checkpoint if it differs from val-loss best ---
+    best_pnl_pack_path = None
+    if best_pnl_model_state is not None:
+        if history["best_pnl_epoch"] != history["best_epoch"]:
+            pnl_model_name = f"{model_name}_best_pnl"
+            pnl_pack_path = OUTPUT_DIR / f"{pnl_model_name}_model.pkl"
+            pnl_pack = dict(model_pack)
+            pnl_pack["model"] = best_pnl_model_state
+            pnl_pack["model_info"] = dict(model_pack["model_info"])
+            pnl_pack["model_info"]["checkpoint_type"] = "best_pnl"
+            pnl_pack["model_info"]["best_pnl"] = history["best_pnl"]
+            pnl_pack["model_info"]["best_pnl_epoch"] = history["best_pnl_epoch"]
+            with open(pnl_pack_path, "wb") as _f:
+                pickle.dump(pnl_pack, _f, protocol=pickle.HIGHEST_PROTOCOL)
+            logger.info("Saved PnL-best model pack: %s", pnl_pack_path)
+            best_pnl_pack_path = str(pnl_pack_path)
+        else:
+            # best_pnl coincides with best_val_loss — the main pack IS the PnL-best
+            logger.info(
+                "PnL-best epoch (%d) == val-loss-best epoch (%d) — main model pack is the PnL-best.",
+                history["best_pnl_epoch"], history["best_epoch"],
+            )
+            best_pnl_pack_path = str(model_pack_path)
+
+    # Add best_pnl_pack_path to summary JSON
+    summary["best_pnl_pack_path"] = best_pnl_pack_path
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
 
 
 if __name__ == "__main__":
