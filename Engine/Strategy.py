@@ -46,6 +46,7 @@ class TripleBarrierHiLowMulticlass:
         debug: bool = True,
         log: bool = True,
         ticket_book: Optional["TicketBook"] = None,
+        include_mtf: bool = True,
     ):
         self.symbol = symbol
         self.order_type = "stop"
@@ -98,6 +99,7 @@ class TripleBarrierHiLowMulticlass:
         self.fills = []
         self.last_signal = 0
         self.ticket_book = ticket_book
+        self.include_mtf = include_mtf
 
         # --- Logging ---
         self.log = log
@@ -274,7 +276,7 @@ class TripleBarrierHiLowMulticlass:
 
         Returns (None, 0, 1, 0, clean_rows) when there is insufficient data.
         """
-        df_feat = self.features(df_ohlcv, include_mtf=True, regime_params=self.regime_params)
+        df_feat = self.features(df_ohlcv, include_mtf=self.include_mtf, regime_params=self.regime_params)
         df_clean = df_feat.dropna(how="any")
         clean_rows = int(len(df_clean))
 
