@@ -35,6 +35,9 @@ MLQ5-Production/
 │   ├── Executor.py       # All MT5 API calls
 │   └── TicketBook.py     # Order journal (in-memory + SQLite)
 │
+├── MQL5/                 # Custom MetaTrader 5 indicators (MQL5 source files)
+│   └── Indicators/       # Drop into MT5 terminal's MQL5/Indicators/ folder
+│
 └── launch_bots.ps1       # Launches all configured live bots
 ```
 
