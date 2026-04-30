@@ -47,9 +47,11 @@ class TripleBarrierHiLowMulticlass:
         log: bool = True,
         ticket_book: Optional["TicketBook"] = None,
         include_mtf: bool = True,
+        volume_precision: int = 2,
     ):
         self.symbol = symbol
         self.order_type = "stop"
+        self.volume_precision = volume_precision
 
         self.signal = 0
         self.maxpos = maxpos
@@ -421,14 +423,14 @@ class TripleBarrierHiLowMulticlass:
             "entry": round(entry, 5) if entry else 0.0,
             "stop": round(stop, 5) if stop else 0.0,
             "take": round(take, 5) if take else 0.0,
-            "position_size": round(position_size, 2),
+            "position_size": round(position_size, self.volume_precision),
             "atr_pips": round(atr * 100_000, 2) if atr else 0.0,
             "donchian_trend": don,
             "buffer_len": len(self.t),
             "clean_rows": clean_rows,
         }
 
-        return int(signal), side, round(entry, 5), round(stop, 5), round(take, 5), round(position_size, 2)
+        return int(signal), side, round(entry, 5), round(stop, 5), round(take, 5), round(position_size, self.volume_precision)
 
     # ------------------------------------------------------------------
     # Main event handler
