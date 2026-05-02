@@ -37,8 +37,8 @@ MIN_TRAIN_ROWS = 20_000
 SEQ_LEN = 256
 BATCH_SIZE = 512
 NUM_EPOCHS = 30
-PATIENCE = 7        # early-stop after this many epochs without val-loss improvement
-BASE_LR = 1e-4
+PATIENCE = 12       # early-stop after this many epochs without val-loss improvement
+BASE_LR = 5e-5
 WEIGHT_DECAY = 1e-3
 
 ROLLOVER_WINDOW = ("21:30", "22:00")
@@ -100,11 +100,11 @@ tcn_model_params = None
 
 loss_params_template = {
     'alpha':             None,
-    'gamma':             2.5,
+    'gamma':             2.0,    # lowered 2.5→2.0: reduce noisy hard-example focus with 95% FLAT class
     'trade_classes':     (0, 2),
     'pr_weight':         8.0,    # sweep best (was 10.0) — aligns with 26Apr configs
     'recall_floor':      0.20,   # hinge activates below this recall per class
-    'rec_floor_weight':  25.0,   # CRITICAL: was 20.0 — 3× stronger floor penalty; drives recall above 0.15
+    'rec_floor_weight':  35.0,   # raised 25→35: hinge was insufficient, rec_buy collapsed to 0.046 at epoch 1
     'direction_penalty': 1.5,    # SELL↔BUY confusion cost
     'eps':               1e-6,
 }
@@ -485,8 +485,9 @@ def main() -> None:
     criterion = TradeProfitabilityLoss(**loss_params)
     optimizer = torch.optim.AdamW(model.parameters(), lr=BASE_LR, weight_decay=WEIGHT_DECAY)
 
-    warmup_steps = 400
-    total_steps = max(1, len(data_pack["train_loader"]) * NUM_EPOCHS)
+    warmup_steps = 1500
+    _cosine_epochs = min(NUM_EPOCHS, 15)   # tighter cosine decay — LR reaches ~0 by epoch 15
+    total_steps = max(1, len(data_pack["train_loader"]) * _cosine_epochs)
 
     def lr_lambda(step: int) -> float:
         if step < warmup_steps:
@@ -512,8 +513,11 @@ def main() -> None:
         "pnl": [],
         "best_val_loss": float("inf"),
         "best_epoch": -1,
+        "best_pnl": float("-inf"),          # NEW
+        "best_pnl_epoch": -1,               # NEW
     }
     best_model_state = None
+    best_pnl_model_state = None             # NEW — track state for best PnL epoch
     epochs_no_improve = 0
 
     logger.info("Training start | epochs=%d | batches train=%d val=%d", NUM_EPOCHS, len(data_pack["train_loader"]), len(data_pack["val_loader"]))
@@ -566,6 +570,12 @@ def main() -> None:
             else:
                 best_tag = ""
                 epochs_no_improve += 1
+
+            # Track best-PnL checkpoint independently of best val_loss
+            if eval_pack["profit"] > history["best_pnl"]:
+                history["best_pnl"] = eval_pack["profit"]
+                history["best_pnl_epoch"] = epoch
+                best_pnl_model_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
             logger.info(
                 "Epoch %d | train_loss=%.6f val_loss=%.6f acc=%.4f profit=%.2f (SELL %.2f | BUY %.2f)%s",
@@ -739,6 +749,59 @@ def main() -> None:
 
     logger.info("Saved model pack: %s", model_pack_path)
     logger.info("Saved summary JSON: %s", summary_path)
+
+    # ── Save best-PnL checkpoint (if different from best val-loss epoch) ──────
+    if best_pnl_model_state is not None and history["best_pnl_epoch"] != history["best_epoch"]:
+        pnl_model_path = OUTPUT_DIR / f"{model_name}_best_pnl_model.pkl"
+        model.load_state_dict({k: v.to(device) for k, v in best_pnl_model_state.items()})
+        pnl_eval = evaluate(model, data_pack["val_loader"], criterion, device)
+        logger.info(
+            "Best PnL checkpoint | best_pnl_epoch=%d pnl=%.2f val_loss=%.6f",
+            history["best_pnl_epoch"], history["best_pnl"], pnl_eval["val_loss"],
+        )
+        pnl_model_info = dict(model_info)
+        pnl_model_info["best_epoch"] = history["best_pnl_epoch"]
+        pnl_model_info["best_val_loss"] = pnl_eval["val_loss"]
+        pnl_model_info["checkpoint_criterion"] = "best_pnl"
+        with open(pnl_model_path, "wb") as f:
+            pickle.dump(
+                {
+                    "model": model.state_dict(),
+                    "model_class": model_cls,
+                    "model_class_source": inspect.getsource(model_cls),
+                    "model_params": model_params_local,
+                    "model_info": pnl_model_info,
+                    "features": data_pack["features"],
+                    "feature_count": data_pack["X_train"].shape[1],
+                    "feature_function": _features_fn,
+                    "feature_function_source": inspect.getsource(_features_fn),
+                    "preprocess_function": preprocess_ohlcv,
+                    "preprocess_function_source": inspect.getsource(preprocess_ohlcv),
+                    "preprocess_args": data_pack["preprocess_ohlcv_args"],
+                    "scaler": data_pack["scaler"],
+                    "label_function": causal_triple_barrier_hilow_trend_labeler,
+                    "label_function_source": inspect.getsource(causal_triple_barrier_hilow_trend_labeler),
+                    "label_params": _label_params,
+                    "regime_params": _regime_params,
+                    "outcome_params": _outcome_params,
+                    "rollover_window": _rollover_window,
+                    "input_shape": (_seq_len, data_pack["X_train"].shape[1]),
+                    "loss_params": loss_params_serializable,
+                    "loss_function": TradeProfitabilityLoss,
+                    "loss_function_source": inspect.getsource(TradeProfitabilityLoss),
+                    "data_split": {
+                        "split_method": "tail_val_bars",
+                        "val_bars": VAL_BARS,
+                        "train_rows": len(data_pack["X_train"]),
+                        "val_rows": len(data_pack["X_val"]),
+                        "train_end_time": str(df_train_raw["Time"].iloc[-1]),
+                        "val_start_time": str(df_val_raw["Time"].iloc[0]),
+                    },
+                    "torch_version": torch.__version__,
+                },
+                f,
+            )
+        logger.info("Saved best PnL model pack: %s", pnl_model_path)
 
 
 if __name__ == "__main__":
