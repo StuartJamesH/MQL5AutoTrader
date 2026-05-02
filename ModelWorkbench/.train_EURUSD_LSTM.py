@@ -37,9 +37,9 @@ MIN_TRAIN_ROWS = 20_000
 SEQ_LEN = 256
 BATCH_SIZE = 512
 NUM_EPOCHS = 30
-PATIENCE = 12       # early-stop after this many epochs without val-loss improvement
+PATIENCE = 7        # early-stop after this many epochs without val-loss improvement
 BASE_LR = 5e-5
-WEIGHT_DECAY = 1e-3
+WEIGHT_DECAY = 2e-3
 
 ROLLOVER_WINDOW = ("21:30", "22:00")
 TRADING_HOURS = None
@@ -83,12 +83,12 @@ outcome_params["max_horizon"] = 1000
 
 lstm_model_params = {
     "input_dim": None,
-    'hidden_dim':         256,
+    'hidden_dim':         192,
     'num_layers':         3,
     'num_classes':        3,
     'bidirectional':      True,
-    'dropout':            0.20,  # v5 sweep best — higher regularisation improves val PnL alignment
-    'dropout_out':        0.45,  # v5 sweep best — slightly relaxed vs prior 0.50
+    'dropout':            0.30,  # R4: increased 0.20→0.30 to counter train/val gap growth
+    'dropout_out':        0.55,  # R4: increased 0.45→0.55 for stronger head regularisation
     'attn_heads':         8,
     'attn_dropout':       0.08,  # v5 sweep best — reduces attention overfitting
     'se_context_window':  64,    # v5 sweep best — wider SE context; requires higher dropout to compensate
@@ -103,8 +103,8 @@ loss_params_template = {
     'gamma':             2.0,    # lowered 2.5→2.0: reduce noisy hard-example focus with 95% FLAT class
     'trade_classes':     (0, 2),
     'pr_weight':         8.0,    # sweep best (was 10.0) — aligns with 26Apr configs
-    'recall_floor':      0.20,   # hinge activates below this recall per class
-    'rec_floor_weight':  35.0,   # raised 25→35: hinge was insufficient, rec_buy collapsed to 0.046 at epoch 1
+    'recall_floor':      0.22,   # R4: raised 0.20→0.22; SELL recall hit 0.102 at ep9 in R3
+    'rec_floor_weight':  50.0,   # R4: raised 35→50; doubles hinge force to counteract SELL recall collapse
     'direction_penalty': 1.5,    # SELL↔BUY confusion cost
     'eps':               1e-6,
 }
