@@ -35,11 +35,11 @@ VAL_BARS = 50_000
 MIN_TRAIN_ROWS = 20_000
 
 SEQ_LEN = 256
-BATCH_SIZE = 512
+BATCH_SIZE = 1024
 NUM_EPOCHS = 30
 PATIENCE = 7        # early-stop after this many epochs without val-loss improvement
 BASE_LR = 5e-5
-WEIGHT_DECAY = 2e-3
+WEIGHT_DECAY = 2.5e-3
 
 ROLLOVER_WINDOW = ("21:30", "22:00")
 TRADING_HOURS = None
@@ -104,7 +104,7 @@ loss_params_template = {
     'trade_classes':     (0, 2),
     'pr_weight':         8.0,    # sweep best (was 10.0) — aligns with 26Apr configs
     'recall_floor':      0.22,   # R4: raised 0.20→0.22; SELL recall hit 0.102 at ep9 in R3
-    'rec_floor_weight':  50.0,   # R4: raised 35→50; doubles hinge force to counteract SELL recall collapse
+    'rec_floor_weight':  38.0,   # R5: lowered 50→38; 50 created adversarial gradient surges (SELL recall 0.535→0.100 in one epoch)
     'direction_penalty': 1.5,    # SELL↔BUY confusion cost
     'eps':               1e-6,
 }
@@ -281,8 +281,7 @@ def build_dataloaders(df_train: pd.DataFrame, df_val: pd.DataFrame, logger: logg
 
 def evaluate(model, loader, criterion, device):
     model.eval()
-    total_loss = 0.0
-    total = 0
+    all_logits_cpu: list[torch.Tensor] = []
     all_preds, all_targets, all_outcomes = [], [], []
 
     with torch.no_grad():
@@ -293,20 +292,28 @@ def evaluate(model, loader, criterion, device):
 
             with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
                 logits = model(xb)
-                loss = criterion(logits, yb, outcome_b)
 
-            bs = yb.size(0)
-            total_loss += float(loss.item()) * bs
-            total += bs
+            # Cast to float32 (AMP may produce bfloat16) before moving off GPU
+            all_logits_cpu.append(logits.float().cpu())
 
             preds = torch.argmax(logits, dim=1)
             all_preds.extend(preds.cpu().numpy().tolist())
             all_targets.extend(yb.cpu().numpy().tolist())
             all_outcomes.extend(outcome_b.cpu().numpy().tolist())
 
-    val_loss = total_loss / max(1, total)
-    all_preds_np = np.asarray(all_preds)
-    all_targets_np = np.asarray(all_targets)
+    # ── Single-pass val loss on the full validation set ───────────────────────
+    # Computing loss per-batch and averaging inflates variance when precision/
+    # recall hinges fire on batches with very few signal bars (~11 SELL/batch).
+    # One evaluation on the full set gives stable, reproducible val_loss values.
+    full_logits   = torch.cat(all_logits_cpu, dim=0).to(device)
+    full_targets  = torch.tensor(all_targets,  dtype=torch.long,    device=device)
+    full_outcomes = torch.tensor(all_outcomes, dtype=torch.float32, device=device)
+    with torch.no_grad():
+        val_loss = float(criterion(full_logits, full_targets, full_outcomes).item())
+    del full_logits, full_targets, full_outcomes   # free GPU memory
+
+    all_preds_np    = np.asarray(all_preds)
+    all_targets_np  = np.asarray(all_targets)
     all_outcomes_np = np.asarray(all_outcomes)
 
     p_per, r_per, f_per, _ = precision_recall_fscore_support(
@@ -314,28 +321,28 @@ def evaluate(model, loader, criterion, device):
     )
 
     sell_mask = all_preds_np == 0
-    buy_mask = all_preds_np == 2
+    buy_mask  = all_preds_np == 2
 
     sell_net = all_outcomes_np[:, 0] - COMMISSION * np.abs(all_outcomes_np[:, 0])
-    buy_net = all_outcomes_np[:, 1] - COMMISSION * np.abs(all_outcomes_np[:, 1])
+    buy_net  = all_outcomes_np[:, 1] - COMMISSION * np.abs(all_outcomes_np[:, 1])
     profit_sell = float(sell_net[sell_mask].sum()) if sell_mask.any() else 0.0
-    profit_buy = float(buy_net[buy_mask].sum()) if buy_mask.any() else 0.0
+    profit_buy  = float(buy_net[buy_mask].sum())   if buy_mask.any()  else 0.0
     profit = profit_sell + profit_buy
 
     return {
-        "val_loss": val_loss,
-        "acc": float(accuracy_score(all_targets_np, all_preds_np)),
-        "f1_sell": float(f_per[0]),
-        "prec_sell": float(p_per[0]),
-        "rec_sell": float(r_per[0]),
-        "f1_buy": float(f_per[2]),
-        "prec_buy": float(p_per[2]),
-        "rec_buy": float(r_per[2]),
-        "profit": float(profit),
+        "val_loss":    val_loss,
+        "acc":         float(accuracy_score(all_targets_np, all_preds_np)),
+        "f1_sell":     float(f_per[0]),
+        "prec_sell":   float(p_per[0]),
+        "rec_sell":    float(r_per[0]),
+        "f1_buy":      float(f_per[2]),
+        "prec_buy":    float(p_per[2]),
+        "rec_buy":     float(r_per[2]),
+        "profit":      float(profit),
         "profit_sell": float(profit_sell),
-        "profit_buy": float(profit_buy),
-        "targets": all_targets_np,
-        "preds": all_preds_np,
+        "profit_buy":  float(profit_buy),
+        "targets":     all_targets_np,
+        "preds":       all_preds_np,
     }
 
 
@@ -485,7 +492,7 @@ def main() -> None:
     criterion = TradeProfitabilityLoss(**loss_params)
     optimizer = torch.optim.AdamW(model.parameters(), lr=BASE_LR, weight_decay=WEIGHT_DECAY)
 
-    warmup_steps = 1500
+    warmup_steps = 800   # R5: reduced 1500→800 to match ~22% of epoch-0 steps with BATCH_SIZE=1024
     _cosine_epochs = min(NUM_EPOCHS, 15)   # tighter cosine decay — LR reaches ~0 by epoch 15
     total_steps = max(1, len(data_pack["train_loader"]) * _cosine_epochs)
 
@@ -539,7 +546,7 @@ def main() -> None:
 
                 scaler_amp.scale(loss).backward()
                 scaler_amp.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
                 scaler_amp.step(optimizer)
                 scaler_amp.update()
                 scheduler.step()
