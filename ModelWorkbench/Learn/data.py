@@ -163,6 +163,21 @@ def _fetch_ohlcv_bulk_data(
     results: dict[str, pd.DataFrame] = {}
     fetch_error: Exception | None = None
 
+    # Shared mutable state so nested callbacks can track and resume position
+    # across connection drops without nonlocal juggling.
+    state: dict[str, Any] = {
+        "symbol_lookup": {},   # populated after first symbols response
+        "symbol_index": 0,
+        "chunk_index": 0,
+        "chunk_retries": 0,
+        "daily_bars": [],
+        "requests": [],
+        # Incremented each time account auth completes. Stale error callbacks
+        # from a dropped connection check this before acting.
+        "generation": 0,
+    }
+    MAX_CHUNK_RETRIES = 5
+
     def _record_error(error: Any) -> None:
         nonlocal fetch_error
         exc = getattr(error, "value", error)
@@ -170,7 +185,7 @@ def _fetch_ohlcv_bulk_data(
             fetch_error = exc
         else:
             fetch_error = RuntimeError(str(exc))
-        print("\nMessage Error:", exc)
+        print("\nFatal fetch error:", exc)
         if reactor.running:
             reactor.stop()
 
@@ -192,72 +207,125 @@ def _fetch_ohlcv_bulk_data(
     def _disconnected(_client: Client, reason: Any) -> None:
         print("\nDisconnected:", reason)
 
+    def _fetch_chunk(chunk_index: int) -> None:
+        requests = state["requests"]
+        symbol_name = symbol_names[state["symbol_index"]]
+
+        if chunk_index >= len(requests):
+            results[symbol_name] = _build_ohlcv_dataframe(state["daily_bars"])
+            print(f"Completed {symbol_name}: {len(results[symbol_name])} rows")
+            state["symbol_index"] += 1
+            state["chunk_index"] = 0
+            state["chunk_retries"] = 0
+            state["daily_bars"] = []
+            state["requests"] = []
+            _fetch_symbol(state["symbol_index"])
+            return
+
+        state["chunk_index"] = chunk_index
+        my_generation = state["generation"]
+        deferred = client.send(requests[chunk_index])
+
+        def _on_success(chunk_result: Any) -> None:
+            trendbars = Protobuf.extract(chunk_result)
+            bars_data = list(map(_transform_trendbar, trendbars.trendbar))
+            state["daily_bars"].extend(bars_data)
+            state["chunk_retries"] = 0
+            print(
+                f"\nFetched {symbol_name} chunk {chunk_index + 1}/{len(requests)}, "
+                f"bars: {len(bars_data)}"
+            )
+            _fetch_chunk(chunk_index + 1)
+
+        def _on_chunk_error(failure: Any) -> None:
+            # Discard stale errors from a generation that has already been
+            # superseded by a successful reconnect + re-auth cycle.
+            if state["generation"] != my_generation:
+                return
+
+            exc = getattr(failure, "value", failure)
+            is_transient = (
+                "ConnectionLost" in str(failure)
+                or "ConnectionDone" in str(failure)
+                or "TimeoutError" in type(exc).__name__
+            )
+            if is_transient and state["chunk_retries"] < MAX_CHUNK_RETRIES:
+                state["chunk_retries"] += 1
+                print(
+                    f"\nChunk {chunk_index + 1} failed (transient, retry "
+                    f"{state['chunk_retries']}/{MAX_CHUNK_RETRIES}) — "
+                    f"waiting for reconnect to resume..."
+                )
+                # Do NOT stop the reactor. The cTrader client will reconnect
+                # automatically and _connected → auth → _account_auth_response_callback
+                # will call _fetch_chunk(chunk_index) to retry.
+            else:
+                print(
+                    f"\nChunk {chunk_index + 1} failed permanently "
+                    f"(retries exhausted or non-transient error)."
+                )
+                _on_error(failure)
+
+        deferred.addCallbacks(_on_success, _on_chunk_error)
+
+    def _fetch_symbol(symbol_index: int) -> None:
+        if symbol_index >= len(symbol_names):
+            print("\nAll symbols fetched")
+            if reactor.running:
+                reactor.stop()
+            return
+
+        symbol_name = symbol_names[symbol_index]
+        symbol = state["symbol_lookup"][symbol_name]
+        state["symbol_index"] = symbol_index
+        state["chunk_index"] = 0
+        state["chunk_retries"] = 0
+        state["daily_bars"] = []
+        state["requests"] = _build_trendbar_requests(
+            symbol_id=symbol.symbolId,
+            account_id=credentials["AccountId"],
+            bar_period=bar_period,
+            num_chunks=num_chunks,
+            weeks_per_chunk=weeks_per_chunk,
+        )
+        print(f"\nFetching symbol {symbol_index + 1}/{len(symbol_names)}: {symbol_name}")
+        _fetch_chunk(0)
+
     def _symbols_response_callback(result: Any) -> None:
         try:
             print("\nSymbols received")
             symbols_response = Protobuf.extract(result)
-            symbol_lookup: dict[str, Any] = {}
             for symbol_name in symbol_names:
                 matches = [s for s in symbols_response.symbol if s.symbolName == symbol_name]
                 if len(matches) == 0:
                     raise ValueError(f"No symbol matches '{symbol_name}'")
                 if len(matches) > 1:
                     raise ValueError(f"Multiple symbols match '{symbol_name}': {matches}")
-                symbol_lookup[symbol_name] = matches[0]
-
-            def _fetch_symbol(symbol_index: int) -> None:
-                if symbol_index >= len(symbol_names):
-                    print("\nAll symbols fetched")
-                    if reactor.running:
-                        reactor.stop()
-                    return
-
-                symbol_name = symbol_names[symbol_index]
-                symbol = symbol_lookup[symbol_name]
-                requests = _build_trendbar_requests(
-                    symbol_id=symbol.symbolId,
-                    account_id=credentials["AccountId"],
-                    bar_period=bar_period,
-                    num_chunks=num_chunks,
-                    weeks_per_chunk=weeks_per_chunk,
-                )
-                daily_bars: list[list[Any]] = []
-                print(f"\nFetching symbol {symbol_index + 1}/{len(symbol_names)}: {symbol_name}")
-
-                def _fetch_chunk(chunk_index: int) -> None:
-                    if chunk_index >= len(requests):
-                        results[symbol_name] = _build_ohlcv_dataframe(daily_bars)
-                        print(f"Completed {symbol_name}: {len(results[symbol_name])} rows")
-                        _fetch_symbol(symbol_index + 1)
-                        return
-
-                    deferred = client.send(requests[chunk_index])
-
-                    def _on_success(chunk_result: Any) -> None:
-                        trendbars = Protobuf.extract(chunk_result)
-                        bars_data = list(map(_transform_trendbar, trendbars.trendbar))
-                        daily_bars.extend(bars_data)
-                        print(
-                            f"\nFetched {symbol_name} chunk {chunk_index + 1}/{len(requests)}, "
-                            f"bars: {len(bars_data)}"
-                        )
-                        _fetch_chunk(chunk_index + 1)
-
-                    deferred.addCallbacks(_on_success, _on_error)
-
-                _fetch_chunk(0)
-
+                state["symbol_lookup"][symbol_name] = matches[0]
             _fetch_symbol(0)
         except Exception as exc:  # pragma: no cover - callback error path
             _record_error(exc)
 
     def _account_auth_response_callback(_result: Any) -> None:
         print("\nAccount authenticated")
-        req = ProtoOASymbolsListReq()
-        req.ctidTraderAccountId = credentials["AccountId"]
-        req.includeArchivedSymbols = False
-        deferred = client.send(req)
-        deferred.addCallbacks(_symbols_response_callback, _on_error)
+        state["generation"] += 1
+
+        if state["symbol_lookup"]:
+            # Reconnected mid-fetch — skip the symbol list request and resume
+            # from the exact chunk that was in-flight when the connection dropped.
+            print(
+                f"Resuming {symbol_names[state['symbol_index']]} "
+                f"chunk {state['chunk_index'] + 1} "
+                f"(retry {state['chunk_retries']}/{MAX_CHUNK_RETRIES})"
+            )
+            _fetch_chunk(state["chunk_index"])
+        else:
+            # First connection — fetch the broker's symbol list.
+            req = ProtoOASymbolsListReq()
+            req.ctidTraderAccountId = credentials["AccountId"]
+            req.includeArchivedSymbols = False
+            deferred = client.send(req)
+            deferred.addCallbacks(_symbols_response_callback, _on_error)
 
     def _application_auth_response_callback(_result: Any) -> None:
         print("\nApplication authenticated")
