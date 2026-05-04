@@ -639,9 +639,10 @@ def main() -> None:
         final_eval["val_loss"],
     )
 
-    today = pd.Timestamp.now().strftime("%Y%m%d")
+    run_ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M")
+    today = run_ts[:8]  # kept for human-readable date_trained field
     ds_title = Path(DS_NAME).name.split(".")[0]
-    model_name = "_".join([ds_title, model_type, f"{_seq_len}seq", today, MODEL_VERSION])
+    model_name = "_".join([ds_title, model_type, f"{_seq_len}seq", run_ts, MODEL_VERSION])
 
     if history["val_losses_all"]:
         save_plots(model_name, history, final_eval)
