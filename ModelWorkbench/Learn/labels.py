@@ -686,8 +686,8 @@ def causal_triple_barrier_hilow_trend_labeler(
         end_time = t_end
 
         for t in range(t0 + 1, t_end + 1):
-            high = df.loc[t, "High"]
-            low  = df.loc[t, "Low"]
+            high = df.loc[t, "Close"]  # Use Close for more realistic exit timing
+            low  = df.loc[t, "Close"]
 
             if side == +1:  # Long
                 if high >= tp:
