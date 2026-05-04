@@ -68,7 +68,7 @@ class TradeProfitabilityLoss(nn.Module):
         self.direction_penalty = float(direction_penalty)
         self.eps = float(eps)
 
-    def forward(self, logits, targets, trade_outcomes=None):  # trade_outcomes unused; kept for API parity
+    def forward(self, logits, targets, trade_outcomes=None, return_components: bool = False):  # trade_outcomes unused; kept for API parity
         probs = torch.softmax(logits, dim=1)
 
         # ── 1. Focal cross-entropy ────────────────────────────────────────────
@@ -107,7 +107,16 @@ class TradeProfitabilityLoss(nn.Module):
         ) / n_trade
         confusion_loss = self.direction_penalty * confusion
 
-        return mean_focal + precision_loss + recall_loss + confusion_loss
+        total = mean_focal + precision_loss + recall_loss + confusion_loss
+        if return_components:
+            return {
+                "total":           float(total.item()) if not total.requires_grad else total,
+                "focal_ce":        float(mean_focal.item()) if not mean_focal.requires_grad else mean_focal,
+                "precision_loss":  float(precision_loss.item()) if not precision_loss.requires_grad else precision_loss,
+                "recall_loss":     float(recall_loss.item()) if not recall_loss.requires_grad else recall_loss,
+                "confusion_loss":  float(confusion_loss.item()) if not confusion_loss.requires_grad else confusion_loss,
+            }
+        return total
 
 
 class BinaryTradeProfitabilityLoss(nn.Module):
