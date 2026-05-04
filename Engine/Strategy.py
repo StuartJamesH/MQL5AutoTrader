@@ -42,7 +42,7 @@ class TripleBarrierHiLowMulticlass:
         mt5_executor: Any = None,
         data_handler: Any = None,
         maxpos: float = 0.5,
-        min_lot_size: float = 0.01,
+        min_lot_size: float = None,
         debug: bool = True,
         log: bool = True,
         ticket_book: Optional["TicketBook"] = None,
@@ -55,7 +55,7 @@ class TripleBarrierHiLowMulticlass:
 
         self.signal = 0
         self.maxpos = maxpos
-        self.min_lot_size = float(min_lot_size)
+        self.min_lot_size = float(min_lot_size) if min_lot_size is not None else 1 / (10 ** self.volume_precision)
         self.patience = patience
         self.countdown = 0
         self.debug = debug
@@ -391,6 +391,16 @@ class TripleBarrierHiLowMulticlass:
             print(f"   pred={pred}  prob_sell={prob_sell:.3f}  prob_flat={prob_flat:.3f}  prob_buy={prob_buy:.3f}")
             print(f"   donchian_trend={don}  trade_threshold={self.trade_threshold}  final signal={signal}")
 
+        # Dollar value per lot per 1.0 price-unit move; queried from MT5 so sizing
+        # is correct across instruments with different contract sizes / quote currencies.
+        point_value: float = 1.0
+        if self.mt5_executor is not None:
+            try:
+                point_value = self.mt5_executor.get_point_value(self.symbol)
+            except Exception as exc:
+                print(f"[WARNING] Could not fetch point_value for {self.symbol}: {exc}. "
+                      "Falling back to point_value=1.0 — position sizing will be incorrect.")
+
         # Compute Hi/Low stop-order entry, stop, take
         if signal == 1:
             side = "buy"
@@ -398,14 +408,14 @@ class TripleBarrierHiLowMulticlass:
             take  = float(self.h[-1]) + (2.5 * atr)
             stop  = float(self.h[-1]) - (2.5 * atr)
             sl_distance = abs(entry - stop)
-            position_size = self.risk / sl_distance if sl_distance > 0 else self.min_lot_size
+            position_size = self.risk / (sl_distance * point_value) if sl_distance > 0 else self.min_lot_size
         elif signal == -1:
             side = "sell"
             entry = float(self.l[-1]) - 0.00001
             take  = float(self.l[-1]) - (2.5 * atr)
             stop  = float(self.l[-1]) + (2.5 * atr)
             sl_distance = abs(stop - entry)
-            position_size = self.risk / sl_distance if sl_distance > 0 else self.min_lot_size
+            position_size = self.risk / (sl_distance * point_value) if sl_distance > 0 else self.min_lot_size
         else:
             side = None
             entry = stop = take = 0.0

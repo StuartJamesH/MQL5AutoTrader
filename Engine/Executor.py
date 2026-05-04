@@ -67,6 +67,29 @@ class MT5LiveExecutionHandler:
             last = mt5.last_error()
             raise RuntimeError(f"Failed to initialize MT5: {last}")
 
+    # -------------------- Public helpers --------------------
+
+    def get_point_value(self, symbol: str) -> float:
+        """Return the account-currency value of 1 lot per 1.0 price-unit move.
+
+        Used by strategies for dollar-risk position sizing::
+
+            lots = risk_dollars / (sl_distance * point_value)
+
+        Raises
+        ------
+        RuntimeError
+            If symbol info is unavailable from the MT5 terminal.
+        """
+        info = mt5.symbol_info(symbol)
+        if info is None:
+            raise RuntimeError(f"Cannot get symbol info for {symbol}")
+        tick_size = info.trade_tick_size
+        tick_value = info.trade_tick_value
+        if tick_size <= 0:
+            raise RuntimeError(f"Invalid tick_size={tick_size} for {symbol}")
+        return tick_value / tick_size
+
     # -------------------- Private helpers --------------------
 
     def _market_price(self, symbol: str, side: str) -> float:
