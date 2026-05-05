@@ -85,22 +85,37 @@ Custom focal loss with three components:
 
 ## What good looks like
 
-**Primary objective:** Positive cumulative PnL on the validation set with realistic commission.
+**Trading objective:** The model is designed to produce a **small number of pure, high-conviction signals** — quality over quantity. It is acceptable (and expected) for recall to be as low as ~0.10 on each direction. The model should be optimised for precision, not recall volume.
+
+**Primary objective:** Maximise **PnL per trade** (`profit / (S_preds + B_preds)`) on the validation set. A model that makes 200 predictions with 0.50 precision is strictly preferred over one that makes 2000 predictions with 0.38 precision, even if the absolute PnL is similar.
 
 Secondary objectives (in order):
-1. Precision on SELL and BUY ≥ 0.35
-2. Recall on SELL and BUY ≥ 0.15
-3. Low val loss at best epoch
-4. Smooth, non-diverging train/val loss curves
+1. Precision on SELL and BUY ≥ 0.45 (target), ≥ 0.40 (acceptable floor)
+2. Recall on SELL and BUY ≥ 0.10 — only a collapse guard; recall above this is neither rewarded nor penalised
+3. Positive absolute PnL at best epoch (secondary to per-trade quality)
+4. Low val loss at best epoch
+5. Smooth, non-diverging train/val loss curves
+
+**How to compute PnL per trade from the log:**
+```
+ppt = profit / (S_preds + B_preds)   e.g. profit=203, S=709, B=939 → ppt = 203/1648 = 0.123
+```
+Always report `ppt` alongside absolute PnL when comparing epochs or runs.
 
 **Red flags:**
-- Prediction collapse: >90% of predictions in one class
+- Total prediction collapse: S+B preds < 100 combined → model has suppressed all signals entirely; recall floor is not working
+- Recall below floor for either direction (< 0.10) → collapse guard has failed; hinge not firing
 - Oscillating val loss with no downward trend → LR too high or noisy loss landscape
 - Large train/val loss gap from early epochs → overfitting
-- Recall near zero for SELL or BUY → model ignoring that direction
-- PnL declining despite improving F1 → precision/recall trade-off misaligned with profitability
+- High precision but negative PnL → direction confusion (model correct class but wrong side) or commission eating into thin margins
 - Best epoch at epoch 0–2 → model never meaningfully improves
-- Negative avg PnL per trade despite positive total PnL → volume masking poor signal quality
+- Precision below 0.38 at best epoch → insufficient precision gradient; consider raising `pr_weight`
+- Precision above 0.55 with recall < 0.05 → model approaching prediction collapse; `recall_floor` or `rec_floor_weight` may need raising
+
+**What is NOT a red flag (given the high-precision objective):**
+- Low recall (0.10–0.20) — this is expected and acceptable
+- Low absolute PnL if ppt is high — volume is intentionally reduced
+- `rec=0.000` in the loss column for most epochs — means recall is safely above the floor; this is correct behaviour
 
 ---
 
@@ -145,11 +160,26 @@ Work through this checklist systematically. Skip sections that are clearly not r
 
 ### Step 5 — Loss function calibration
 ```
-1. Read loss params from summary JSON or training script
+The model targets HIGH PRECISION / LOW RECALL. Evaluate calibration against this objective.
+
+1. Read loss params from summary JSON or training script.
 2. Check alpha weights: are they proportional to inverse class frequency?
-3. Is recall_floor triggering? (If recall stays above floor all training, floor may be too low)
-4. Is direction_penalty appropriate? (If direction confusion is rare, high penalty wastes capacity)
-5. Is gamma well-calibrated? (Too low → FLAT easy examples dominate; too high → noisy hard examples dominate)
+3. pr_weight calibration (PRIMARY knob for this objective):
+   - If precision at best epoch < 0.40: pr_weight is too low → increase toward 10–12
+   - If precision at best epoch > 0.55 AND S+B preds < 150 total: approaching collapse → reduce
+   - Healthy range given objective: pr_weight 8.0–11.0
+4. recall_floor calibration (COLLAPSE GUARD ONLY — not a recall booster):
+   - Floor should sit well below the model's natural operating recall (~0.10)
+   - If recall never drops near the floor across all epochs: floor is correctly set
+   - If floor fires frequently (recall_loss > 0.01 in >30% of epochs): floor is too high
+   - If S+B preds approach 0 at any epoch: floor is too low or rec_floor_weight too weak
+5. rec_floor_weight calibration:
+   - With a low floor (0.08–0.12), weight should be modest (8–15) to avoid violent correction
+   - A large weight with a low floor creates explosive correction when it does fire
+6. Is direction_penalty appropriate? (confusion_loss > 0.01 consistently → keep; near 0 → can reduce)
+7. Is gamma well-calibrated? (Too low → FLAT easy examples dominate; too high → noisy hard examples dominate)
+   - With high pr_weight dominating (~95% of val_loss), gamma has limited effect; keep at 2.0 unless
+     precision is stalled and focal_ce is near zero
 ```
 
 ### Step 6 — Training dynamics
