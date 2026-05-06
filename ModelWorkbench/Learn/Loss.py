@@ -37,6 +37,9 @@ class TradeProfitabilityLoss(nn.Module):
         gamma: float = 2.5,
         trade_classes=(0, 2),
         pr_weight: float = 10.0,
+        pr_weight_sell: float = None,
+        pr_weight_buy: float = None,
+        precision_power: float = 1.0,
         recall_floor: float = 0.15,
         rec_floor_weight: float = 20.0,
         direction_penalty: float = 1.5,
@@ -48,8 +51,17 @@ class TradeProfitabilityLoss(nn.Module):
             alpha:             Class weights tensor for focal CE [SELL, FLAT, BUY].
             gamma:             Focal loss exponent. Higher = more focus on hard examples.
             trade_classes:     (sell_idx, buy_idx) — indices of the two trade classes.
-            pr_weight:         Weight on the mean per-class precision penalty.
-                               Primary knob for driving precision up.
+            pr_weight:         Base weight on the mean per-class precision penalty.
+                               Retained for backward compatibility and used when
+                               pr_weight_sell/pr_weight_buy are not provided.
+            pr_weight_sell:    SELL precision penalty weight. If None, uses pr_weight.
+            pr_weight_buy:     BUY precision penalty weight. If None, uses pr_weight.
+            precision_power:   Exponent for the precision penalty (default 1.0 = linear).
+                               Set to 2.0 for quadratic: stronger gradient when precision is
+                               far below target, gentler as precision improves. Quadratic
+                               requires pr_weight to be scaled up by ~1.56× vs linear to
+                               maintain equivalent gradient at precision=0 (e.g. linear
+                               pr_weight=7.5 ≈ quadratic pr_weight=11.7 at prec=0.0).
             recall_floor:      Minimum acceptable recall for each trade class before
                                the hinge penalty activates. Default 0.15 prevents
                                collapse without fighting precision above the floor.
@@ -66,6 +78,9 @@ class TradeProfitabilityLoss(nn.Module):
         self.sell_cls = int(trade_classes[0])
         self.buy_cls  = int(trade_classes[1])
         self.pr_weight        = float(pr_weight)
+        self.pr_weight_sell   = float(pr_weight_sell) if pr_weight_sell is not None else float(pr_weight)
+        self.pr_weight_buy    = float(pr_weight_buy) if pr_weight_buy is not None else float(pr_weight)
+        self.precision_power  = float(precision_power)  # 1.0 = linear (default), 2.0 = quadratic
         self.recall_floor     = float(recall_floor)
         self.rec_floor_weight = float(rec_floor_weight)
         self.direction_penalty = float(direction_penalty)
@@ -92,7 +107,10 @@ class TradeProfitabilityLoss(nn.Module):
         # and lower p_c on non-c bars.
         prec_sell = (p_sell * true_sell).sum() / (p_sell.sum() + self.eps)
         prec_buy  = (p_buy  * true_buy ).sum() / (p_buy.sum()  + self.eps)
-        precision_loss = self.pr_weight * ((1.0 - prec_sell) + (1.0 - prec_buy)) / 2.0
+        precision_loss = (
+            self.pr_weight_sell * (1.0 - prec_sell) ** self.precision_power +
+            self.pr_weight_buy  * (1.0 - prec_buy)  ** self.precision_power
+        ) / 2.0
 
         # ── 3. Recall floor hinge (quadratic below floor, zero above) ────────
         # rec_c = sum(p_c on true-c bars) / count(true-c bars)
