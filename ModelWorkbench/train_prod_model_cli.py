@@ -114,6 +114,10 @@ _DEFAULTS = {
     "log_file":        Path("Engine/train_multiclass_prod.log"),
 }
 
+# Keys that may appear in a model profile but are training config, not model constructor args.
+# They are popped from the profile dict before the model is instantiated.
+_TRAINING_PROFILE_KEYS = frozenset({"seq_len", "batch_size", "lr", "weight_decay"})
+
 
 # ---------------------------------------------------------------------------
 # Helpers: param loading
@@ -380,33 +384,47 @@ def build_dataloaders(
 
 def evaluate(model, loader, criterion, device, commission: float = 0.0) -> dict:
     model.eval()
-    total_loss = 0.0
-    total = 0
+    all_logits_cpu: list[torch.Tensor] = []
     all_preds, all_targets, all_outcomes = [], [], []
 
     with torch.no_grad():
         for xb, yb, outcome_b in loader:
-            xb       = xb.to(device)
-            yb       = yb.to(device)
+            xb        = xb.to(device)
+            yb        = yb.to(device)
             outcome_b = outcome_b.to(device) if isinstance(outcome_b, torch.Tensor) else outcome_b
 
             with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
                 logits = model(xb)
-                loss   = criterion(logits, yb, outcome_b)
 
-            bs = yb.size(0)
-            total_loss += float(loss.item()) * bs
-            total      += bs
+            # Cast to float32 before moving off GPU (AMP may produce bfloat16)
+            all_logits_cpu.append(logits.float().cpu())
 
             preds = torch.argmax(logits, dim=1)
             all_preds.extend(preds.cpu().numpy().tolist())
             all_targets.extend(yb.cpu().numpy().tolist())
             all_outcomes.extend(outcome_b.cpu().numpy().tolist())
 
-    val_loss        = total_loss / max(1, total)
+    # Single-pass val loss on the full validation set — avoids variance from batches
+    # with very few signal bars where precision/recall hinges fire unevenly.
+    full_logits   = torch.cat(all_logits_cpu, dim=0).to(device)
+    full_targets  = torch.tensor(all_targets,  dtype=torch.long,    device=device)
+    full_outcomes = torch.tensor(all_outcomes, dtype=torch.float32, device=device)
+    with torch.no_grad():
+        _loss_out = criterion(full_logits, full_targets, full_outcomes, return_components=True)
+    val_loss = float(_loss_out["total"].item()) if hasattr(_loss_out["total"], "item") else float(_loss_out["total"])
+    loss_components = {
+        "focal_ce":       float(_loss_out["focal_ce"].item())       if hasattr(_loss_out["focal_ce"],       "item") else float(_loss_out["focal_ce"]),
+        "precision_loss": float(_loss_out["precision_loss"].item()) if hasattr(_loss_out["precision_loss"], "item") else float(_loss_out["precision_loss"]),
+        "recall_loss":    float(_loss_out["recall_loss"].item())    if hasattr(_loss_out["recall_loss"],    "item") else float(_loss_out["recall_loss"]),
+        "confusion_loss": float(_loss_out["confusion_loss"].item()) if hasattr(_loss_out["confusion_loss"], "item") else float(_loss_out["confusion_loss"]),
+    }
+    del full_logits, full_targets, full_outcomes
+
     all_preds_np    = np.asarray(all_preds)
     all_targets_np  = np.asarray(all_targets)
     all_outcomes_np = np.asarray(all_outcomes)
+
+    pred_counts = np.bincount(all_preds_np, minlength=3).tolist()
 
     p_per, r_per, f_per, _ = precision_recall_fscore_support(
         all_targets_np, all_preds_np, labels=[0, 1, 2], average=None, zero_division=0
@@ -420,19 +438,21 @@ def evaluate(model, loader, criterion, device, commission: float = 0.0) -> dict:
     profit_buy  = float(buy_net[buy_mask].sum())   if buy_mask.any()  else 0.0
 
     return {
-        "val_loss":    val_loss,
-        "acc":         float(accuracy_score(all_targets_np, all_preds_np)),
-        "f1_sell":     float(f_per[0]),
-        "prec_sell":   float(p_per[0]),
-        "rec_sell":    float(r_per[0]),
-        "f1_buy":      float(f_per[2]),
-        "prec_buy":    float(p_per[2]),
-        "rec_buy":     float(r_per[2]),
-        "profit":      float(profit_sell + profit_buy),
-        "profit_sell": float(profit_sell),
-        "profit_buy":  float(profit_buy),
-        "targets":     all_targets_np,
-        "preds":       all_preds_np,
+        "val_loss":        val_loss,
+        "acc":             float(accuracy_score(all_targets_np, all_preds_np)),
+        "f1_sell":         float(f_per[0]),
+        "prec_sell":       float(p_per[0]),
+        "rec_sell":        float(r_per[0]),
+        "f1_buy":          float(f_per[2]),
+        "prec_buy":        float(p_per[2]),
+        "rec_buy":         float(r_per[2]),
+        "profit":          float(profit_sell + profit_buy),
+        "profit_sell":     float(profit_sell),
+        "profit_buy":      float(profit_buy),
+        "pred_counts":     pred_counts,
+        "loss_components": loss_components,
+        "targets":         all_targets_np,
+        "preds":           all_preds_np,
     }
 
 
@@ -518,16 +538,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Minimum acceptable training rows after the tail split.")
 
     # --- Sequence / batch ---
-    p.add_argument("--seq-len",       type=int,   default=_DEFAULTS["seq_len"])
-    p.add_argument("--batch-size",    type=int,   default=_DEFAULTS["batch_size"])
+    p.add_argument("--seq-len",       type=int,   default=None,
+                   help="Sequence length. Overrides the model profile value; falls back to built-in default (256).")
+    p.add_argument("--batch-size",    type=int,   default=None,
+                   help="Batch size. Overrides the model profile value; falls back to built-in default (512).")
 
     # --- Training ---
     p.add_argument("--epochs",        type=int,   default=_DEFAULTS["epochs"])
     p.add_argument("--patience",      type=int,   default=_DEFAULTS["patience"],
                    help="Early-stop patience (epochs without val-loss improvement).")
-    p.add_argument("--lr",            type=float, default=_DEFAULTS["lr"],
-                   help="Base learning rate for AdamW.")
-    p.add_argument("--weight-decay",  type=float, default=_DEFAULTS["weight_decay"])
+    p.add_argument("--lr",            type=float, default=None,
+                   help="Base learning rate for AdamW. Overrides the model profile value; falls back to built-in default (1e-4).")
+    p.add_argument("--weight-decay",  type=float, default=None,
+                   help="AdamW weight decay. Overrides the model profile value; falls back to built-in default (1e-6).")
 
     # --- Output / misc ---
     p.add_argument("--model-version", default=_DEFAULTS["model_version"],
@@ -554,6 +577,18 @@ def main(argv=None) -> None:
     trading_hours   = _DEFAULTS["trading_hours"]
 
     logger = setup_logging(log_file, output_dir, cloud_log=not args.no_cloud_log)
+
+    import subprocess as _subprocess
+    try:
+        git_hash = _subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(Path(__file__).parent.parent),
+            stderr=_subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        git_hash = "unknown"
+    logger.info("Git hash: %s", git_hash)
+
     logger.info(
         "Starting | symbol=%s label_profile=%s model_arch=%s model_profile=%s loss_profile=%s",
         args.symbol, args.label_profile, args.model_arch, args.model_profile, args.loss_profile,
@@ -586,6 +621,18 @@ def main(argv=None) -> None:
     base_model_params = load_model_profile(args.model_arch, args.model_profile)
     base_loss_params  = load_loss_profile(args.loss_profile)
 
+    # Extract training config keys from the model profile (they must not reach the model constructor).
+    # Resolution order: CLI arg (explicit) > profile value > built-in default.
+    _profile_seq_len     = base_model_params.pop("seq_len",      None)
+    _profile_batch_size  = base_model_params.pop("batch_size",   None)
+    _profile_lr          = base_model_params.pop("lr",           None)
+    _profile_weight_decay = base_model_params.pop("weight_decay", None)
+
+    _resolved_seq_len     = args.seq_len      if args.seq_len      is not None else (_profile_seq_len      or _DEFAULTS["seq_len"])
+    _resolved_batch_size  = args.batch_size   if args.batch_size   is not None else (_profile_batch_size   or _DEFAULTS["batch_size"])
+    _resolved_lr          = args.lr           if args.lr           is not None else (_profile_lr           or _DEFAULTS["lr"])
+    _resolved_weight_decay = args.weight_decay if args.weight_decay is not None else (_profile_weight_decay or _DEFAULTS["weight_decay"])
+
     # --- Symbol → dataset + features ---
     ds_name  = SYMBOL_DATASET_MAP[args.symbol]
     features_fn = SYMBOL_FEATURES_MAP[args.symbol]
@@ -615,7 +662,7 @@ def main(argv=None) -> None:
     _outcome_params = resume_pack["outcome_params"]  if resume_pack else outcome_params
     _rollover       = resume_pack["rollover_window"] if resume_pack else rollover_window
     _features_fn    = resume_pack["feature_function"] if resume_pack else features_fn
-    _seq_len        = resume_pack["input_shape"][0]  if resume_pack else args.seq_len
+    _seq_len        = resume_pack["input_shape"][0]  if resume_pack else _resolved_seq_len
 
     # --- Label and feature engineering ---
     df_train = add_outcomes(apply_multiclass_labels(df_train_raw, _label_params, _rollover), _outcome_params)
@@ -639,7 +686,7 @@ def main(argv=None) -> None:
     data_pack = build_dataloaders(
         df_train, df_val, logger,
         seq_len=_seq_len,
-        batch_size=args.batch_size,
+        batch_size=_resolved_batch_size,
         trading_hours=trading_hours,
         resume_scaler=_resume_scaler,
     )
@@ -674,6 +721,8 @@ def main(argv=None) -> None:
         model_params_local["bias_init"]  = bias_init
 
     model = model_cls(**model_params_local).to(device)
+    n_params = sum(p.numel() for p in model.parameters())
+    logger.info("Model parameter count: %d (%.2fM)", n_params, n_params / 1e6)
     if resume_pack:
         model.load_state_dict({k: v.to(device) for k, v in resume_pack["model"].items()})
         logger.info("Loaded model weights from resume pack.")
@@ -684,7 +733,7 @@ def main(argv=None) -> None:
     criterion = TradeProfitabilityLoss(**loss_params)
 
     # --- Optimiser and scheduler ---
-    optimizer    = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer    = torch.optim.AdamW(model.parameters(), lr=_resolved_lr, weight_decay=_resolved_weight_decay)
     warmup_steps = 400
     total_steps  = max(1, len(data_pack["train_loader"]) * args.epochs)
 
@@ -707,9 +756,16 @@ def main(argv=None) -> None:
         "pnl": [],
         "best_val_loss": float("inf"),
         "best_epoch": -1,
+        "best_pnl": float("-inf"),
+        "best_pnl_epoch": -1,
+        "grad_norms": [],
+        "lr_curve": [],
+        "pred_dist": [],
+        "loss_components_curve": [],
     }
-    best_model_state = None
-    epochs_no_improve = 0
+    best_model_state    = None
+    best_pnl_model_state = None
+    epochs_no_improve   = 0
 
     logger.info(
         "Training start | epochs=%d | batches train=%d val=%d",
@@ -721,6 +777,8 @@ def main(argv=None) -> None:
             model.train()
             train_loss_sum = 0.0
             n_train = 0
+            grad_norm_sum = 0.0
+            n_batches     = 0
 
             for xb, yb, outcome_b in tqdm(data_pack["train_loader"], desc=f"Epoch {epoch}"):
                 xb        = xb.to(device)
@@ -736,7 +794,7 @@ def main(argv=None) -> None:
                 for p in model.parameters():
                     if p.grad is not None:
                         p.grad.data = torch.nan_to_num(p.grad.data, nan=0.0, posinf=0.0, neginf=0.0)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0).item()
                 scaler_amp.step(optimizer)
                 scaler_amp.update()
                 scheduler.step()
@@ -744,9 +802,16 @@ def main(argv=None) -> None:
                 bs              = yb.size(0)
                 train_loss_sum += float(loss.item()) * bs
                 n_train        += bs
+                grad_norm_sum  += gnorm
+                n_batches      += 1
 
-            train_loss_epoch = train_loss_sum / max(1, n_train)
+            train_loss_epoch  = train_loss_sum / max(1, n_train)
+            grad_norm_epoch   = grad_norm_sum  / max(1, n_batches)
+            current_lr        = optimizer.param_groups[0]["lr"]
+
             history["train_losses"].append(float(train_loss_epoch))
+            history["grad_norms"].append(grad_norm_epoch)
+            history["lr_curve"].append(current_lr)
 
             eval_pack = evaluate(model, data_pack["val_loader"], criterion, device, commission)
             history["val_losses_all"].append(eval_pack["val_loss"])
@@ -757,6 +822,8 @@ def main(argv=None) -> None:
             history["prec_buy"].append(eval_pack["prec_buy"])
             history["rec_buy"].append(eval_pack["rec_buy"])
             history["pnl"].append(eval_pack["profit"])
+            history["pred_dist"].append(eval_pack["pred_counts"])
+            history["loss_components_curve"].append(eval_pack["loss_components"])
 
             if eval_pack["val_loss"] < history["best_val_loss"]:
                 history["best_val_loss"] = eval_pack["val_loss"]
@@ -768,10 +835,31 @@ def main(argv=None) -> None:
                 best_tag          = ""
                 epochs_no_improve += 1
 
+            if eval_pack["profit"] > history["best_pnl"]:
+                history["best_pnl"]       = eval_pack["profit"]
+                history["best_pnl_epoch"] = epoch
+                best_pnl_model_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+            _lc = eval_pack["loss_components"]
+            _pd = eval_pack["pred_counts"]
             logger.info(
-                "Epoch %d | train_loss=%.6f val_loss=%.6f acc=%.4f profit=%.2f (SELL %.2f | BUY %.2f)%s",
-                epoch, train_loss_epoch, eval_pack["val_loss"], eval_pack["acc"],
-                eval_pack["profit"], eval_pack["profit_sell"], eval_pack["profit_buy"], best_tag,
+                "Epoch %d | train=%.4f val=%.4f gap=%+.4f lr=%.2e gnorm=%.4f | "
+                "acc=%.4f profit=%.2f (S %.2f B %.2f) | "
+                "preds=[S:%d F:%d B:%d] | "
+                "loss[fce=%.3f pr=%.3f rec=%.3f dir=%.3f]%s",
+                epoch,
+                train_loss_epoch,
+                eval_pack["val_loss"],
+                eval_pack["val_loss"] - train_loss_epoch,
+                current_lr,
+                grad_norm_epoch,
+                eval_pack["acc"],
+                eval_pack["profit"],
+                eval_pack["profit_sell"],
+                eval_pack["profit_buy"],
+                _pd[0], _pd[1], _pd[2],
+                _lc["focal_ce"], _lc["precision_loss"], _lc["recall_loss"], _lc["confusion_loss"],
+                best_tag,
             )
 
             if epochs_no_improve >= args.patience:
@@ -836,62 +924,61 @@ def main(argv=None) -> None:
         if resume_pack
         else output_dir / f"{model_name}_model.pkl"
     )
+    _model_pack_base = {
+        "model_class":              model_cls,
+        "model_class_source":       inspect.getsource(model_cls),
+        "model_params":             model_params_local,
+        "features":                 data_pack["features"],
+        "feature_count":            data_pack["X_train"].shape[1],
+        "feature_function":         _features_fn,
+        "feature_function_source":  inspect.getsource(_features_fn),
+        "preprocess_function":      preprocess_ohlcv,
+        "preprocess_function_source": inspect.getsource(preprocess_ohlcv),
+        "preprocess_args":          data_pack["preprocess_ohlcv_args"],
+        "scaler":                   data_pack["scaler"],
+        "label_function":           causal_triple_barrier_hilow_trend_labeler,
+        "label_function_source":    inspect.getsource(causal_triple_barrier_hilow_trend_labeler),
+        "label_params":             _label_params,
+        "regime_params":            _regime_params,
+        "outcome_params":           _outcome_params,
+        "rollover_window":          _rollover,
+        "input_shape":              (_seq_len, data_pack["X_train"].shape[1]),
+        "loss_params":              loss_params_serializable,
+        "loss_function":            TradeProfitabilityLoss,
+        "loss_function_source":     inspect.getsource(TradeProfitabilityLoss),
+        "data_split": {
+            "split_method":    "tail_val_bars",
+            "val_bars":        args.val_bars,
+            "train_rows":      len(data_pack["X_train"]),
+            "val_rows":        len(data_pack["X_val"]),
+            "train_end_time":  str(df_train_raw["Time"].iloc[-1]),
+            "val_start_time":  str(df_val_raw["Time"].iloc[0]),
+        },
+        "torch_version": torch.__version__,
+        "val_metrics": {
+            "final_f1_sell":        history["f1_sell"][-1],
+            "final_f1_buy":         history["f1_buy"][-1],
+            "final_precision_sell": history["prec_sell"][-1],
+            "final_precision_buy":  history["prec_buy"][-1],
+            "final_recall_sell":    history["rec_sell"][-1],
+            "final_recall_buy":     history["rec_buy"][-1],
+            "final_profit":         history["pnl"][-1],
+            "best_f1_sell":         max(history["f1_sell"]),
+            "best_f1_buy":          max(history["f1_buy"]),
+            "best_precision_sell":  max(history["prec_sell"]),
+            "best_precision_buy":   max(history["prec_buy"]),
+            "f1_sell_curve":        history["f1_sell"],
+            "f1_buy_curve":         history["f1_buy"],
+            "precision_sell_curve": history["prec_sell"],
+            "precision_buy_curve":  history["prec_buy"],
+            "recall_sell_curve":    history["rec_sell"],
+            "recall_buy_curve":     history["rec_buy"],
+            "pnl_curve":            history["pnl"],
+        },
+    }
     with open(model_pack_path, "wb") as fh:
         pickle.dump(
-            {
-                "model":                    model.state_dict(),
-                "model_class":              model_cls,
-                "model_class_source":       inspect.getsource(model_cls),
-                "model_params":             model_params_local,
-                "model_info":               model_info,
-                "features":                 data_pack["features"],
-                "feature_count":            data_pack["X_train"].shape[1],
-                "feature_function":         _features_fn,
-                "feature_function_source":  inspect.getsource(_features_fn),
-                "preprocess_function":      preprocess_ohlcv,
-                "preprocess_function_source": inspect.getsource(preprocess_ohlcv),
-                "preprocess_args":          data_pack["preprocess_ohlcv_args"],
-                "scaler":                   data_pack["scaler"],
-                "label_function":           causal_triple_barrier_hilow_trend_labeler,
-                "label_function_source":    inspect.getsource(causal_triple_barrier_hilow_trend_labeler),
-                "label_params":             _label_params,
-                "regime_params":            _regime_params,
-                "outcome_params":           _outcome_params,
-                "rollover_window":          _rollover,
-                "input_shape":              (_seq_len, data_pack["X_train"].shape[1]),
-                "loss_params":              loss_params_serializable,
-                "loss_function":            TradeProfitabilityLoss,
-                "loss_function_source":     inspect.getsource(TradeProfitabilityLoss),
-                "data_split": {
-                    "split_method":    "tail_val_bars",
-                    "val_bars":        args.val_bars,
-                    "train_rows":      len(data_pack["X_train"]),
-                    "val_rows":        len(data_pack["X_val"]),
-                    "train_end_time":  str(df_train_raw["Time"].iloc[-1]),
-                    "val_start_time":  str(df_val_raw["Time"].iloc[0]),
-                },
-                "torch_version": torch.__version__,
-                "val_metrics": {
-                    "final_f1_sell":        history["f1_sell"][-1],
-                    "final_f1_buy":         history["f1_buy"][-1],
-                    "final_precision_sell": history["prec_sell"][-1],
-                    "final_precision_buy":  history["prec_buy"][-1],
-                    "final_recall_sell":    history["rec_sell"][-1],
-                    "final_recall_buy":     history["rec_buy"][-1],
-                    "final_profit":         history["pnl"][-1],
-                    "best_f1_sell":         max(history["f1_sell"]),
-                    "best_f1_buy":          max(history["f1_buy"]),
-                    "best_precision_sell":  max(history["prec_sell"]),
-                    "best_precision_buy":   max(history["prec_buy"]),
-                    "f1_sell_curve":        history["f1_sell"],
-                    "f1_buy_curve":         history["f1_buy"],
-                    "precision_sell_curve": history["prec_sell"],
-                    "precision_buy_curve":  history["prec_buy"],
-                    "recall_sell_curve":    history["rec_sell"],
-                    "recall_buy_curve":     history["rec_buy"],
-                    "pnl_curve":            history["pnl"],
-                },
-            },
+            {**_model_pack_base, "model": model.state_dict(), "model_info": model_info},
             fh,
         )
 
@@ -908,10 +995,10 @@ def main(argv=None) -> None:
             "loss_profile":   args.loss_profile,
             "val_bars":       args.val_bars,
             "seq_len":        _seq_len,
-            "batch_size":     args.batch_size,
+            "batch_size":     _resolved_batch_size,
             "epochs":         args.epochs,
-            "base_lr":        args.lr,
-            "weight_decay":   args.weight_decay,
+            "base_lr":        _resolved_lr,
+            "weight_decay":   _resolved_weight_decay,
             "rollover_window": rollover_window,
             "trading_hours":  trading_hours,
             "commission":     commission,
@@ -925,19 +1012,25 @@ def main(argv=None) -> None:
             "val_start_time":  str(df_val_raw["Time"].iloc[0]),
         },
         "best": {
-            "best_epoch":    history["best_epoch"],
-            "best_val_loss": history["best_val_loss"],
+            "best_epoch":     history["best_epoch"],
+            "best_val_loss":  history["best_val_loss"],
+            "best_pnl":       history["best_pnl"],
+            "best_pnl_epoch": history["best_pnl_epoch"],
         },
         "curves": {
-            "train_loss":     history["train_losses"],
-            "val_loss":       history["val_losses_all"],
-            "f1_sell":        history["f1_sell"],
-            "f1_buy":         history["f1_buy"],
-            "precision_sell": history["prec_sell"],
-            "precision_buy":  history["prec_buy"],
-            "recall_sell":    history["rec_sell"],
-            "recall_buy":     history["rec_buy"],
-            "pnl":            history["pnl"],
+            "train_loss":        history["train_losses"],
+            "val_loss":          history["val_losses_all"],
+            "f1_sell":           history["f1_sell"],
+            "f1_buy":            history["f1_buy"],
+            "precision_sell":    history["prec_sell"],
+            "precision_buy":     history["prec_buy"],
+            "recall_sell":       history["rec_sell"],
+            "recall_buy":        history["rec_buy"],
+            "pnl":               history["pnl"],
+            "grad_norms":        history["grad_norms"],
+            "lr_curve":          history["lr_curve"],
+            "pred_dist":         history["pred_dist"],
+            "loss_components":   history["loss_components_curve"],
         },
     }
 
@@ -951,6 +1044,24 @@ def main(argv=None) -> None:
 
     logger.info("Saved model pack  : %s", model_pack_path)
     logger.info("Saved summary JSON: %s", summary_path)
+
+    if best_pnl_model_state is not None and history["best_pnl_epoch"] != history["best_epoch"]:
+        pnl_model_path = output_dir / f"{model_name}_best_pnl_model.pkl"
+        model.load_state_dict({k: v.to(device) for k, v in best_pnl_model_state.items()})
+        pnl_eval = evaluate(model, data_pack["val_loader"], criterion, device, commission)
+        logger.info(
+            "Best PnL checkpoint | best_pnl_epoch=%d pnl=%.2f val_loss=%.6f",
+            history["best_pnl_epoch"], history["best_pnl"], pnl_eval["val_loss"],
+        )
+        pnl_model_info = dict(model_info)
+        pnl_model_info["best_epoch"] = history["best_pnl_epoch"]
+        pnl_model_info["checkpoint_criterion"] = "best_pnl"
+        with open(pnl_model_path, "wb") as fh:
+            pickle.dump(
+                {**_model_pack_base, "model": model.state_dict(), "model_info": pnl_model_info},
+                fh,
+            )
+        logger.info("Saved best PnL model pack: %s", pnl_model_path)
 
 
 if __name__ == "__main__":
