@@ -41,6 +41,7 @@ class TradeProfitabilityLoss(nn.Module):
         rec_floor_weight: float = 20.0,
         direction_penalty: float = 1.5,
         eps: float = 1e-6,
+        label_smoothing: float = 0.0,
     ):
         """
         Args:
@@ -56,6 +57,8 @@ class TradeProfitabilityLoss(nn.Module):
                                Increase (e.g. to 30–40) if a class still collapses.
             direction_penalty: Weight on the SELL↔BUY direction confusion penalty.
             eps:               Numerical stability constant.
+            label_smoothing:   Label smoothing coefficient for focal CE (0.0 = off, 0.05 recommended).
+                               Bounds the maximum CE gradient, smoothing the precision↔recall adversarial cycle.
         """
         super().__init__()
         self.alpha = alpha
@@ -67,12 +70,13 @@ class TradeProfitabilityLoss(nn.Module):
         self.rec_floor_weight = float(rec_floor_weight)
         self.direction_penalty = float(direction_penalty)
         self.eps = float(eps)
+        self.label_smoothing = float(label_smoothing)
 
     def forward(self, logits, targets, trade_outcomes=None, return_components: bool = False):  # trade_outcomes unused; kept for API parity
         probs = torch.softmax(logits, dim=1)
 
         # ── 1. Focal cross-entropy ────────────────────────────────────────────
-        ce    = F.cross_entropy(logits, targets, weight=self.alpha, reduction='none')
+        ce    = F.cross_entropy(logits, targets, weight=self.alpha, reduction='none', label_smoothing=self.label_smoothing)
         pt    = probs[torch.arange(len(targets)), targets]
         focal = ((1.0 - pt) ** self.gamma) * ce
         mean_focal = focal.mean()
