@@ -92,12 +92,21 @@ def preprocess_ohlcv(
     binary_like_features = [c for c in df.columns if _is_binary_or_ternary(c)]
 
     # Known normalized/bounded features to pass through without additional scaling
-    normalized_prefixes = ['z_', 'price_loc_']
+    normalized_prefixes = ['z_', 'price_loc_', 'fl_z_', 'fl_price_loc_']
     normalized_suffixes = ['_norm']
     normalized_names = set([
+        # Legacy (add_all_features / add_selected_features)
         'RSI','MFI','ADX','WilliamsR','StochK','StochD',
         'AroonUp','AroonDown','AroonOsc','DI_plus_14','DI_minus_14','DI_diff_14',
-        'bb_pos','volume_z','ret_vol_scaled','trend_alignment','mtf_avg_adx'
+        'bb_pos','volume_z','ret_vol_scaled','trend_alignment','mtf_avg_adx',
+        # Feature library (add_feature_library / _add_features_*)
+        'fl_stochrsi_14', 'fl_stoch_k', 'fl_stoch_d', 'fl_stoch_kd_diff',
+        'fl_mfi_14', 'fl_adx14', 'fl_aroon_osc_14',
+        'fl_rsi_3', 'fl_rsi_7', 'fl_rsi_14', 'fl_rsi_21',
+        'fl_cmf_20', 'fl_cmo_14', 'fl_trix_14', 'fl_cci_14', 'fl_cci_20',
+        'fl_willr_14', 'fl_di_plus', 'fl_di_minus',
+        'fl_bb_pos_20', 'fl_squeeze', 'fl_nvi_z', 'fl_volume_z',
+        'fl_rv_ratio_5_20', 'fl_rv_ratio_20_60',
     ])
 
     def _is_normalized_feature(name):
