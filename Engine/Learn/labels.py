@@ -678,8 +678,14 @@ def causal_triple_barrier_hilow_trend_labeler(
         label = 0
         end_time = t_end
 
+        # NOTE (Change 2, 2026-05-xx): Exit simulation uses actual High/Low to align with
+        # calculate_trade_outcomes_all_candles. Previous versions used Close prices, which
+        # created label/outcome inconsistency (bars where H touched TP but C didn't were
+        # mislabelled FLAT, suppressing model precision by ~5-8 pp).
+        # Requires new label profile to use (do NOT re-run old profiles after this change
+        # without being aware that results will differ).
         for t in range(t0 + 1, t_end + 1):
-            high = df.loc[t, "High"]
+            high = df.loc[t, "High"]   # Use High/Low to match outcome calculator (calculate_trade_outcomes_all_candles)
             low  = df.loc[t, "Low"]
 
             if side == +1:  # Long
