@@ -381,20 +381,48 @@ preprocessing, or model architecture in one tree must be applied to the other.
 
 ## 9. Model Packs
 
-A model pack is a `.pkl` file produced by the training pipeline in `ModelWorkbench/`.
+A model pack is a `.pkl` file produced by `ModelWorkbench/train_prod_model_cli.py`.
 It contains everything the strategy needs to run inference without any other files.
+
+**Producing a model pack** — run from the repo root:
+
+```powershell
+.\.venv\Scripts\python.exe .\ModelWorkbench\train_prod_model_cli.py `
+    --symbol EURUSD `
+    --label-profile EURUSD_1m_dev `
+    --model-arch LSTM `
+    --model-profile EURUSD_1m_r11 `
+    --loss-profile EURUSD_1m_r11 `
+    --patience 12 `
+    --epochs 30
+```
+
+Each completed run writes up to four files to `Engine/Model Packs/`:
+
+| File | Contents |
+|---|---|
+| `*_model.pkl` | Full model pack at the best val-loss epoch |
+| `*_best_pnl_model.pkl` | Pack at the epoch with highest val-set PnL (written only if different from above) |
+| `*_summary.json` | Training config, metrics, and per-epoch curves (human-readable, no unpickling needed) |
+| `*_plots.png` | Val loss, precision/recall, confusion matrix, and PnL curves |
+
+**Pack contents:**
 
 | Key | Contents |
 |---|---|
-| `model` | Trained PyTorch `nn.Module` (state_dict included) |
-| `model_type` | `'TCN'`, `'LSTM'`, or `'Transformer'` |
+| `model` | Trained PyTorch `state_dict` |
+| `model_class` | Architecture class reference (for re-instantiation) |
+| `model_params` | Constructor kwargs to recreate the architecture |
+| `model_info` | Metadata: `model_type`, `seq_len`, symbol, best epoch, val metrics |
 | `scaler` | Fitted `RobustScaler` instance (never refit at inference) |
-| `feature_cols` | Ordered list of feature column names expected by the model |
-| `seq_len` | Sequence length the model was trained on (e.g. `256`) |
-| `num_classes` | Number of output classes (`3` for multiclass) |
-| `symbol` | Instrument the model was trained on |
+| `features` | Ordered list of feature column names expected by the model |
+| `feature_function` | Reference to the per-symbol feature engineering function |
+| `preprocess_function` | Reference to `preprocess_ohlcv` |
+| `preprocess_args` | Kwargs passed to preprocessing at inference |
 | `label_params` | Label parameters used at training (for reference) |
-| `summary` | Training metrics snapshot |
+| `loss_params` | Loss profile used at training (for reference) |
+| `data_split` | Train/val row counts and timestamps |
+| `val_metrics` | Per-epoch precision, recall, F1, PnL, and prediction count curves |
 
 Model packs live in `Engine/Model Packs/`. The active pack for each bot is set
 by `MODEL_PACK_PATH` in the launcher.

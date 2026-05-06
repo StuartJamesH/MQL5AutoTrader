@@ -74,7 +74,7 @@ pack. A model is only useful if every part of the pipeline is self-consistent.
        ↓
 5a. Train (notebook)   →  2_0_a Train LSTM.ipynb  /  2_0_b Train TCN.ipynb
   or
-5b. Train (script)     →  .train_<symbol>_<arch>.py  (production)
+5b. Train (script)     →  train_prod_model_cli.py  (production — all config from JSON profiles)
                        →  train_sweep_tcn.py / train_sweep_lstm.py  (hyperparameter search)
        ↓
 6. Evaluate offline    →  3_0 Review Model - Multiclass.ipynb
@@ -298,10 +298,74 @@ investigate data quality, execution slippage, or model drift.
 
 ## Training Scripts
 
+### Production trainer — `train_prod_model_cli.py`
+
+`train_prod_model_cli.py` is the **primary production training script**. All configuration is
+driven by JSON profile files under `params/` — no hardcoded values. Each run is fully
+reproducible by re-supplying the same CLI flags.
+
+**Supported symbols:** `EURUSD`, `US500`, `XAUUSD`, `US2000`, `NAS100`, `SpotCrude`
+
+**Supported architectures:** `LSTM` (`LSTMAttentionSEClassifier`), `TCN` (`TCNAttentionSEClassifier`)
+
+**Minimal invocation:**
+
+```powershell
+# From repo root
+.\.venv\Scripts\python.exe .\ModelWorkbench\train_prod_model_cli.py `
+    --symbol EURUSD `
+    --label-profile EURUSD_1m_dev `
+    --model-arch LSTM `
+    --model-profile EURUSD_1m_r11 `
+    --loss-profile EURUSD_1m_r11 `
+    --patience 12 `
+    --epochs 30
+```
+
+Training config (`seq_len`, `batch_size`, `lr`, `weight_decay`) is read from the model profile
+in `params/model_params_multiclass.json`. Any of these can be overridden on the CLI.
+
+**Key CLI flags:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--symbol` | required | Instrument — maps to OHLCV CSV and feature function |
+| `--label-profile` | required | Key in `params/label_params.json` |
+| `--model-arch` | `LSTM` | `LSTM` or `TCN` |
+| `--model-profile` | `prod` | Architecture + training config profile in `params/model_params_multiclass.json` |
+| `--loss-profile` | `prod` | Loss hyperparameter profile in `params/loss_params_multiclass.json` |
+| `--epochs` | `30` | Maximum training epochs |
+| `--patience` | `7` | Early-stop patience (epochs without val-loss improvement) |
+| `--n-rows` | all | Use only the last N rows (useful for fast test runs) |
+| `--seq-len` | from profile | Override sequence length |
+| `--batch-size` | from profile | Override batch size |
+| `--lr` | from profile | Override learning rate |
+| `--weight-decay` | from profile | Override AdamW weight decay |
+| `--resume-model-pack` | none | Path to a `.pkl` to resume training from |
+| `--no-cloud-log` | false | Disable cloud log mirroring |
+
+Run `python train_prod_model_cli.py --help` for the full argument list.
+
+**Output** (written to `Engine/Model Packs/`):
+
+| File | Contents |
+|---|---|
+| `*_model.pkl` | Full model pack (best val-loss checkpoint) |
+| `*_best_pnl_model.pkl` | Model pack at the epoch with highest val-set PnL (if different) |
+| `*_summary.json` | Training metrics, config, and per-epoch curves |
+| `*_plots.png` | Val loss, precision/recall, confusion matrix, PnL curves |
+
+Training progress is logged to `Engine/train_multiclass_prod.log` (and optionally mirrored to
+`CLOUD_LOG_DIR` from `.env`). Each epoch line shows gradient norm, prediction distribution,
+per-direction PnL, and all four loss components.
+
+---
+
+### Other scripts
+
 | Script | Purpose |
 |---|---|
-| `train_prod_model.py` | Generic training template. Not normally run directly — production training uses the hidden per-symbol launchers below. |
-| `.train_<symbol>_<arch>.py` | **Production launchers** (e.g., `.train_EURUSD_TCN.py`). Thin configuration wrappers around `train_prod_model.py` with symbol-specific dataset paths, label params, and model hyperparameters. Not tracked in git. |
+| `train_prod_model.py` | ~~Deprecated~~. Legacy hardcoded template — superseded by `train_prod_model_cli.py`. Do not use for new runs; retained as a reference only. |
 | `train_sweep_tcn.py` | Runs multiple TCN configurations sequentially on a single dataset. Each config is saved as a separate model pack. Use for hyperparameter search. |
 | `train_sweep_lstm.py` | Same as above for LSTM configurations. |
 | `train_sweep_loss.py` | Sweeps loss function parameters (`pr_weight`, `recall_floor`, `direction_penalty`, etc.) with a fixed architecture. |
