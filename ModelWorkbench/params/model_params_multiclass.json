@@ -1,0 +1,110 @@
+{
+  "_comment": "Model architecture profiles for multiclass training (LSTMAttentionSEClassifier / TCNAttentionSEClassifier). Select with --model-arch and --model-profile. 'input_dim', 'bias_init', and 'num_classes' are always set automatically at runtime — do not add them here.",
+
+  "LSTM": {
+    "US500_1m_dev": {
+      "_comment": "US500/XAUUSD 1m dev profile. v5 sweep best: wider SE context, moderate dropout.",
+      "hidden_dim":        256,
+      "num_layers":        3,
+      "bidirectional":     true,
+      "dropout":           0.20,
+      "dropout_out":       0.45,
+      "attn_heads":        8,
+      "attn_dropout":      0.08,
+      "se_context_window": 64,
+      "use_learned_query": true
+    },
+    "EURUSD_1m_dev": {
+      "_comment": "EURUSD 1m dev profile. Tuned over R6-R10: reduced hidden_dim, stronger dropout, wider SE context.",
+      "hidden_dim":        176,
+      "num_layers":        3,
+      "bidirectional":     true,
+      "dropout":           0.30,
+      "dropout_out":       0.55,
+      "attn_heads":        8,
+      "attn_dropout":      0.08,
+      "se_context_window": 64,
+      "use_learned_query": true
+    },
+
+    "prod": {
+      "_comment": "Production LSTM. Bidirectional 3-layer with SE attention.",
+      "hidden_dim":        256,
+      "num_layers":        3,
+      "bidirectional":     true,
+      "dropout":           0.15,
+      "dropout_out":       0.50,
+      "attn_heads":        8,
+      "attn_dropout":      0.05,
+      "se_context_window": 32,
+      "use_learned_query": true
+    },
+
+    "large": {
+      "_comment": "Deeper LSTM for longer sequences or complex instruments.",
+      "hidden_dim":        512,
+      "num_layers":        4,
+      "bidirectional":     true,
+      "dropout":           0.20,
+      "dropout_out":       0.50,
+      "attn_heads":        8,
+      "attn_dropout":      0.05,
+      "se_context_window": 64,
+      "use_learned_query": true
+    },
+
+    "small": {
+      "_comment": "Lightweight LSTM for fast iteration and debugging.",
+      "hidden_dim":        128,
+      "num_layers":        2,
+      "bidirectional":     true,
+      "dropout":           0.10,
+      "dropout_out":       0.40,
+      "attn_heads":        4,
+      "attn_dropout":      0.05,
+      "se_context_window": 16,
+      "use_learned_query": true
+    }
+  },
+
+  "TCN": {
+    "prod": {
+      "_comment": "Production TCN. kernel_size=3, num_layers=6 → receptive field ≈ 253 bars (matches SEQ_LEN=256).",
+      "hidden_channels":   256,
+      "num_layers":        6,
+      "kernel_size":       3,
+      "dropout":           0.20,
+      "dropout_out":       0.40,
+      "attn_heads":        8,
+      "attn_dropout":      0.10,
+      "use_learned_query": true,
+      "se_context_window": 32
+    },
+
+    "large": {
+      "_comment": "Deeper TCN for longer sequences (SEQ_LEN=512+). Receptive field ≈ 509 bars.",
+      "hidden_channels":   256,
+      "num_layers":        8,
+      "kernel_size":       3,
+      "dropout":           0.25,
+      "dropout_out":       0.45,
+      "attn_heads":        8,
+      "attn_dropout":      0.10,
+      "use_learned_query": true,
+      "se_context_window": 64
+    },
+
+    "small": {
+      "_comment": "Lightweight TCN. Receptive field ≈ 61 bars.",
+      "hidden_channels":   128,
+      "num_layers":        4,
+      "kernel_size":       3,
+      "dropout":           0.15,
+      "dropout_out":       0.35,
+      "attn_heads":        4,
+      "attn_dropout":      0.10,
+      "use_learned_query": true,
+      "se_context_window": 16
+    }
+  }
+}

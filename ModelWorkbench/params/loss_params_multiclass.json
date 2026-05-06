@@ -1,0 +1,81 @@
+{
+  "_comment": "Loss function profiles for TradeProfitabilityLoss (multiclass). Select with --loss-profile. 'alpha' (class weights tensor) is computed automatically from the training label distribution — do not add it here.",
+
+  "US500_1m_dev": {
+    "_comment": "US500 1m dev profile. Reduced gamma+pr_weight to prevent BUY collapse; strong rec_floor_weight to overcome L2 minority suppression.",
+    "gamma":             2.0,
+    "trade_classes":     [0, 2],
+    "pr_weight":         10.0,
+    "recall_floor":      0.15,
+    "rec_floor_weight":  90.0,
+    "direction_penalty": 1.5,
+    "eps":               1e-6
+  },
+
+  "XAUUSD_1m_dev": {
+    "_comment": "XAUUSD 1m dev profile. Higher gamma and pr_weight; moderate recall floor.",
+    "gamma":             2.5,
+    "trade_classes":     [0, 2],
+    "pr_weight":         12.0,
+    "recall_floor":      0.20,
+    "rec_floor_weight":  60.0,
+    "direction_penalty": 1.5,
+    "eps":               1e-6
+  },
+
+  "EURUSD_1m_dev": {
+    "_comment": "EURUSD 1m dev profile. Tuned over R6-R10: lower gamma, reduced pr_weight to prevent BUY collapse, early recall hinge, minimal direction penalty.",
+    "gamma":             2.0,
+    "trade_classes":     [0, 2],
+    "pr_weight":         7.0,
+    "recall_floor":      0.12,
+    "rec_floor_weight":  25.0,
+    "direction_penalty": 0.5,
+    "eps":               1e-6,
+    "label_smoothing":   0.05
+  },
+
+  "prod": {
+    "_comment": "Production default. High precision bias with strong recall floor to prevent class collapse.",
+    "gamma":             2.5,
+    "trade_classes":     [0, 2],
+    "pr_weight":         12.0,
+    "recall_floor":      0.20,
+    "rec_floor_weight":  60.0,
+    "direction_penalty": 1.5,
+    "eps":               1e-6
+  },
+
+  "balanced": {
+    "_comment": "Softer precision lever. Useful for instruments with sparse labels.",
+    "gamma":             2.0,
+    "trade_classes":     [0, 2],
+    "pr_weight":         6.0,
+    "recall_floor":      0.15,
+    "rec_floor_weight":  30.0,
+    "direction_penalty": 1.2,
+    "eps":               1e-6
+  },
+
+  "high_precision": {
+    "_comment": "Maximum precision pressure. Use when signal quality matters more than coverage.",
+    "gamma":             3.0,
+    "trade_classes":     [0, 2],
+    "pr_weight":         20.0,
+    "recall_floor":      0.10,
+    "rec_floor_weight":  80.0,
+    "direction_penalty": 2.0,
+    "eps":               1e-6
+  },
+
+  "high_recall": {
+    "_comment": "Lower precision pressure. Catches more entries at the cost of precision.",
+    "gamma":             2.0,
+    "trade_classes":     [0, 2],
+    "pr_weight":         5.0,
+    "recall_floor":      0.30,
+    "rec_floor_weight":  40.0,
+    "direction_penalty": 1.0,
+    "eps":               1e-6
+  }
+}
