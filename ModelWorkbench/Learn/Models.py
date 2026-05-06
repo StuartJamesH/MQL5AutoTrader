@@ -243,6 +243,10 @@ class LSTMAttentionSEClassifier(nn.Module):
     """
     Bidirectional LSTM + LayerNorm + Squeeze-Excite gating + multi-head attention pooling.
 
+    Uses stacked single-layer LSTMs with inter-layer LayerNorm for gradient
+    stability (prevents hidden-state magnitude growth in deep LSTM
+    configurations).
+
     SE gates suppress noisy timesteps using a global mean-pool context signal.
     Attention pooling uses either a learned query token (recommended) or the final
     LSTM hidden state as the query.
@@ -284,17 +288,22 @@ class LSTMAttentionSEClassifier(nn.Module):
         self.bidirectional     = bidirectional
         self.use_learned_query = use_learned_query
         self.se_context_window = se_context_window
-
-        self.lstm = nn.LSTM(
-            input_dim,
-            hidden_dim,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=dropout if num_layers > 1 else 0.0,
-            bidirectional=bidirectional,
-        )
+        self.num_layers        = num_layers
+        self.dropout_p         = dropout
 
         lstm_out_dim  = hidden_dim * (2 if bidirectional else 1)
+        # Stack of single-layer LSTMs with inter-layer LayerNorm for gradient stability.
+        # Prevents the hidden-state magnitude growth that occurs in nn.LSTM(num_layers>1).
+        self.lstm_layers = nn.ModuleList()
+        self.inter_ln    = nn.ModuleList()  # LayerNorm after each layer except the last
+        for i in range(num_layers):
+            in_dim = input_dim if i == 0 else lstm_out_dim
+            self.lstm_layers.append(
+                nn.LSTM(in_dim, hidden_dim, num_layers=1, batch_first=True, bidirectional=bidirectional)
+            )
+            if i < num_layers - 1:
+                self.inter_ln.append(nn.LayerNorm(lstm_out_dim))
+
         se_bottleneck = max(8, lstm_out_dim // 8)
 
         self.ln        = nn.LayerNorm(lstm_out_dim)
@@ -326,7 +335,16 @@ class LSTMAttentionSEClassifier(nn.Module):
         # x: (B, S, F)
         B = x.size(0)
 
-        h, (hn, _) = self.lstm(x)   # h: (B, S, lstm_out_dim)
+        # Thread input through stacked single-layer LSTMs with inter-layer LayerNorm.
+        h = x
+        final_hn = []
+        for i, lstm_layer in enumerate(self.lstm_layers):
+            h, (hn_i, _) = lstm_layer(h)
+            if i < self.num_layers - 1:
+                h = self.inter_ln[i](h)
+                h = F.dropout(h, p=self.dropout_p, training=self.training)
+            final_hn.append(hn_i)
+        hn = torch.cat(final_hn, dim=0)  # shape: (num_dirs * num_layers, B, hidden_dim)
         h = self.ln(h)
 
         # Squeeze-Excite: gate timesteps using the most-recent bars as context.
