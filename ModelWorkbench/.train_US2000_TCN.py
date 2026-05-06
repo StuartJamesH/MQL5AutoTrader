@@ -587,6 +587,11 @@ def main() -> None:
 
                 scaler_amp.scale(loss).backward()
                 scaler_amp.unscale_(optimizer)
+                # NaN/inf guard — AMP (bfloat16) can produce inf gradients on rare sequences;
+                # without this, clip_grad_norm_ returns inf → clip_coef=0 → all grads zeroed.
+                for p in model.parameters():
+                    if p.grad is not None:
+                        p.grad.data = torch.nan_to_num(p.grad.data, nan=0.0, posinf=0.0, neginf=0.0)
                 gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0).item()
                 scaler_amp.step(optimizer)
                 scaler_amp.update()

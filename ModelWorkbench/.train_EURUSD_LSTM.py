@@ -27,7 +27,7 @@ from Learn.Loss import TradeProfitabilityLoss
 # Configuration
 # -----------------------------------------------------------------------------
 DS_NAME = "data/EURUSD_M1_520weeks.csv"
-N_ROWS = None
+N_ROWS = 1_500_000  # Set to None to load the full dataset; or a positive integer to load only the most recent N rows (after sorting by time)
 FEATURES = _add_features_EURUSD
 
 # Use a fixed recent tail for validation; train on everything before it.
@@ -37,9 +37,17 @@ MIN_TRAIN_ROWS = 20_000
 SEQ_LEN = 256
 BATCH_SIZE = 1024
 NUM_EPOCHS = 30
-PATIENCE = 7        # early-stop after this many epochs without val-loss improvement
-BASE_LR = 5e-5
-WEIGHT_DECAY = 2.5e-3
+PATIENCE = 12       # R6: extended 7→10 (paired with cosine_epochs; R10 cosine_epochs=30); allows search to ep17+ before stopping
+                    # R11: raised 10→12; lower BASE_LR=2.0e-5 + higher WEIGHT_DECAY=7.0e-3 slows convergence; best epoch
+                    #      expected ep8-12; extended budget ensures full search without excess runtime
+BASE_LR = 2.0e-5        # R10: reduced 5e-5→3.5e-5; R9 gnorm exploded 23→97 in 10 epochs (3.5× faster than R7); lower LR slows
+                        #      gradient growth and smooths val_loss oscillation (ep5 spike to 7.83 driven by sharp precision landscape)
+                        # R11: reduced 3.5e-5→2.0e-5; R10 gnorm grew 4.56→125.79 in 14ep (same explosion pattern);
+                        #      43% reduction to slow hidden-state saturation; paired with max_norm 0.5→1.0;
+                        #      net effective step at ep6 ≈2.9e-7, comparable to R10 (2.45e-7)
+WEIGHT_DECAY = 7.0e-3  # R8: increased 3.5e-3→4.5e-3; gap jumped +0.126→+0.501 at ep10 and held +0.25–0.38 in ep11-17; stronger L2 needed to suppress post-ep9 overfitting
+                        # R11: increased 4.5e-3→7.0e-3; R10 TV gap widened +0.232 (ep6) → +1.477 (ep13) = +1.245 in 7 epochs;
+                        #      R8 fix insufficient; stronger L2 also slows hidden-state saturation driving gnorm growth
 
 ROLLOVER_WINDOW = ("21:30", "22:00")
 TRADING_HOURS = None
@@ -83,12 +91,12 @@ outcome_params["max_horizon"] = 1000
 
 lstm_model_params = {
     "input_dim": None,
-    'hidden_dim':         192,
+    'hidden_dim':         176,    # R6: reduced 192→176; 2.47M params / 14.1 params-per-signal-seq (vs 16.7 at 192)
     'num_layers':         3,
     'num_classes':        3,
     'bidirectional':      True,
     'dropout':            0.30,  # R4: increased 0.20→0.30 to counter train/val gap growth
-    'dropout_out':        0.55,  # R4: increased 0.45→0.55 for stronger head regularisation
+    'dropout_out':        0.60,  # R11: increased 0.55→0.60; R10 TV gap sustained >0.65 from ep7+; stronger head regularisation
     'attn_heads':         8,
     'attn_dropout':       0.08,  # v5 sweep best — reduces attention overfitting
     'se_context_window':  64,    # v5 sweep best — wider SE context; requires higher dropout to compensate
@@ -102,11 +110,28 @@ loss_params_template = {
     'alpha':             None,
     'gamma':             2.0,    # lowered 2.5→2.0: reduce noisy hard-example focus with 95% FLAT class
     'trade_classes':     (0, 2),
-    'pr_weight':         8.0,    # sweep best (was 10.0) — aligns with 26Apr configs
-    'recall_floor':      0.22,   # R4: raised 0.20→0.22; SELL recall hit 0.102 at ep9 in R3
-    'rec_floor_weight':  38.0,   # R5: lowered 50→38; 50 created adversarial gradient surges (SELL recall 0.535→0.100 in one epoch)
-    'direction_penalty': 1.5,    # SELL↔BUY confusion cost
+    'pr_weight':         5.5,    # R11: reduced 7.0→5.5; R10 precision_loss dominated at 4.5–5.5 (vs focal_ce ~0.5);
+                                 #      BUY predictions collapsed 662→33 between ep6 and ep7 as pr_loss drove a sharp
+                                 #      incentive reversal; 5.5 maintains precision pressure while reducing oscillation
+    'recall_floor':      0.16,   # R10: raised 0.10→0.12; triggers recall hinge earlier in collapse trajectory
+                                 #      (at ~50-80 BUY preds rather than 7); gives model more gradient signal before
+                                 #      complete suppression occurs; still a collapse guard only — well below R7's
+                                 #      natural operating recall of ~0.12-0.15
+                                 # R11: raised 0.12→0.16; at floor=0.12 the hinge provides only 0.010 force (0.2% of
+                                 #      pr_loss) at rec=0.10 (onset of BUY collapse); floor=0.16 gives 0.108 (2.4%) —
+                                 #      11× stronger early-collapse counter-gradient; BUY collapsed 662→33 preds at
+                                 #      ep6→ep7 with zero hinge resistance (rec_buy=0.202 > floor=0.12 going in)
+    'rec_floor_weight':  30.0,   # R10: raised 10.0→25.0; R9 hinge at ep3 was 0.092 vs pr_loss 5.17 (56× weaker);
+                                 #      at weight=25: hinge=25×(0.12-0.004)²=0.337, ~3.7× stronger collapse signal;
+                                 #      paired with lower pr_weight=7.0 (less suppression pressure) this creates
+                                 #      a more balanced incentive structure
+                                 # R11: raised 25.0→30.0; paired with recall_floor 0.12→0.16 (Change 4);
+                                 #      combined effect at rec=0.007: 30×(0.16-0.007)²=0.702 vs 0.319 in R10 (2.2×);
+                                 #      modest weight boost complements quadratic floor raise
+    'direction_penalty': 0.5,    # R10: reduced 1.5→0.5; confusion_loss was consistently ~2.6e-7 (negligible);
+                                 #      penalty contributes no meaningful gradient — reduced to simplify loss landscape
     'eps':               1e-6,
+    'label_smoothing':   0.05,   # R6: smooth focal CE gradient; bounds adversarial precision↔recall cycle
 }
 
 
@@ -515,7 +540,9 @@ def main() -> None:
     optimizer = torch.optim.AdamW(model.parameters(), lr=BASE_LR, weight_decay=WEIGHT_DECAY)
 
     warmup_steps = 800   # R5: reduced 1500→800 to match ~22% of epoch-0 steps with BATCH_SIZE=1024
-    _cosine_epochs = min(NUM_EPOCHS, 15)   # tighter cosine decay — LR reaches ~0 by epoch 15
+    _cosine_epochs = min(NUM_EPOCHS, 30)   # R10: extended 25→30; paired with lower base_lr=3.5e-5; at ep10 with
+                                           # cosine_epochs=30: LR≈2.6e-5, giving more room for late-epoch fine-tuning
+                                           # before hitting near-zero LR; R8: extended 20→25
     total_steps = max(1, len(data_pack["train_loader"]) * _cosine_epochs)
 
     def lr_lambda(step: int) -> float:
@@ -574,7 +601,15 @@ def main() -> None:
 
                 scaler_amp.scale(loss).backward()
                 scaler_amp.unscale_(optimizer)
-                gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5).item()
+                # NaN/inf guard — BiLSTM + AMP (bfloat16) can overflow on rare sequences;
+                # without this, clip_grad_norm_ returns inf → clip_coef=0 → all grads zeroed.
+                for p in model.parameters():
+                    if p.grad is not None:
+                        p.grad.data = torch.nan_to_num(p.grad.data, nan=0.0, posinf=0.0, neginf=0.0)
+                # R11: raised max_norm 0.5→1.0 (standard LSTM clip; at max_norm=0.5, clip_coef was 11% at ep0
+                #      and 0.79% at ep6 — gradient starvation from first epoch; 1.0 doubles throughput while
+                #      nan_to_num guard above still handles AMP overflow independently)
+                gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0).item()
                 scaler_amp.step(optimizer)
                 scaler_amp.update()
                 scheduler.step()
