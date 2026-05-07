@@ -1,9 +1,9 @@
 {
-  "_comment": "Model architecture profiles for multiclass training (LSTMAttentionSEClassifier / TCNAttentionSEClassifier). Select with --model-arch and --model-profile. 'input_dim', 'bias_init', and 'num_classes' are always set automatically at runtime — do not add them here.",
+  "_comment": "Model architecture profiles for multiclass training (LSTMAttentionSEClassifier / TCNAttentionSEClassifier). Select with --model-arch and --model-profile. 'input_dim', 'bias_init', and 'num_classes' are always set automatically at runtime — do not add them here. Training config keys (seq_len, batch_size, lr, weight_decay) are optional — CLI args override profile values, which override built-in defaults.",
 
   "LSTM": {
     "US500_1m_dev": {
-      "_comment": "US500/XAUUSD 1m dev profile. v5 sweep best: wider SE context, moderate dropout.",
+      "_comment": "US500/XAUUSD 1m dev profile. v5 sweep best: wider SE context, moderate dropout. R(Apr30): best_ep=7 val_loss=7.34 prec_S=0.363 prec_B=0.473 ppt=0.234 — used with LSTM prod arch (weight_decay=2e-4 via CLI); train/val gap reached +2.79 by ep12, +2.06 by ep14 confirming underfitting L2; weight_decay 1e-6 in this profile was overridden at CLI. Superseded by US500_1m_r2.",
       "hidden_dim":        256,
       "num_layers":        3,
       "bidirectional":     true,
@@ -12,10 +12,66 @@
       "attn_heads":        8,
       "attn_dropout":      0.08,
       "se_context_window": 64,
-      "use_learned_query": true
+      "use_learned_query": true,
+      "seq_len":           256,
+      "batch_size":        512,
+      "lr":                1e-4,
+      "weight_decay":      1e-6
     },
-    "EURUSD_1m_dev": {
-      "_comment": "EURUSD 1m dev profile. Tuned over R6-R10: reduced hidden_dim, stronger dropout, wider SE context.",
+
+    "US500_1m_r2": {
+      "_comment": "From US500_1m_dev. weight_decay 1e-6→3e-3: train/val gap reached +2.79 by ep12 in Apr-30 run (R(Apr30) used wd=2e-4 via CLI override which was still insufficient; need 3e-3 matching EURUSD-tuned range). dropout_out 0.45→0.50: additional head regularisation to complement L2. lr 1e-4→3e-5: best epoch at 3–7 across all Apr-28–30 runs; slower LR allows training to benefit from more epochs. se_context_window kept at 64 (from dev). Paired with loss-profile US500_1m_r2. Expected: val/train gap stays below 1.5 through ep20; best_epoch moves to 12–20. R1: best_ep=7 val_loss=7.34 profit=153 (S=43 B=110) — interrupted ep14; train/val gap +2.06 at ep14 (expected <1.5); wd=3e-3 insufficient. SELL recovered after ep3 oscillation (no precision data, old log format). Superseded by US500_1m_r3.",
+      "hidden_dim":        256,
+      "num_layers":        3,
+      "bidirectional":     true,
+      "dropout":           0.20,
+      "dropout_out":       0.50,
+      "attn_heads":        8,
+      "attn_dropout":      0.08,
+      "se_context_window": 64,
+      "use_learned_query": true,
+      "seq_len":           256,
+      "batch_size":        512,
+      "lr":                3e-5,
+      "weight_decay":      3e-3
+    },
+
+    "US500_1m_r3": {
+      "_comment": "From US500_1m_r2. R1 outcome: train/val gap +2.06 at ep14 despite wd=3e-3 (expected <1.5) → wd=3e-3 insufficient for US500's 3.17M training sequences. weight_decay 3e-3→8e-3: stronger L2 to close overfitting gap. dropout_out 0.50→0.55: additional head regularisation to complement L2. lr 3e-5→5e-5: slightly higher LR compensated by stronger WD, allows better escape from early local minima. Expected: train/val gap <1.5 through ep20; best_epoch 10–18. Pair with loss-profile US500_1m_r3. R1: best_ep=0 (FAILED) — gnorm escalated 73→145; lr=5e-5 too high for loss landscape; label_smoothing=0.05 in loss conflicted with focal+pr_weight causing BUY pred collapse (B=4 at ep2); best_epoch=0 means model degraded every epoch. Superseded by US500_1m_r4.",
+      "hidden_dim":        256,
+      "num_layers":        3,
+      "bidirectional":     true,
+      "dropout":           0.20,
+      "dropout_out":       0.55,
+      "attn_heads":        8,
+      "attn_dropout":      0.08,
+      "se_context_window": 64,
+      "use_learned_query": true,
+      "seq_len":           256,
+      "batch_size":        512,
+      "lr":                5e-5,
+      "weight_decay":      8e-3
+    },
+
+    "US500_1m_r4": {
+      "_comment": "From US500_1m_r3. R1 was a total failure (best_ep=0, gnorm 73→145, BUY collapsed to 4 preds at ep2). Root causes: (1) lr=5e-5 too high — reverted to lr=2.5e-5 (below r2's 3e-5 to account for dropout_out=0.55 head and wd=5e-3). (2) wd=8e-3 overcorrected — reduced to 5e-3 (between r2's 3e-3 and r3's 8e-3; EURUSD stable at 7e-3 but smaller model). All other params unchanged from r3. Pair with loss-profile US500_1m_r4. Expected: gnorm stable <100; val loss improving beyond ep0; best_epoch 8–18.",
+      "hidden_dim":        256,
+      "num_layers":        3,
+      "bidirectional":     true,
+      "dropout":           0.20,
+      "dropout_out":       0.55,
+      "attn_heads":        8,
+      "attn_dropout":      0.08,
+      "se_context_window": 64,
+      "use_learned_query": true,
+      "seq_len":           256,
+      "batch_size":        512,
+      "lr":                2.5e-5,
+      "weight_decay":      5e-3
+    },
+
+    "EURUSD_1m_dev":{
+      "_comment": "EURUSD 1m dev profile.Tuned over R6-R10: reduced hidden_dim, stronger dropout, wider SE context. R10: best_ep=6 val_loss=4.884 prec_S=0.398 prec_B=0.370 ppt=0.053 (best_val_ep) / ppt=0.175 (best_pnl_ep=10) — TV gap hit 1.477 by ep13; dropout_out 0.55 insufficient.",
       "hidden_dim":        176,
       "num_layers":        3,
       "bidirectional":     true,
@@ -24,7 +80,79 @@
       "attn_heads":        8,
       "attn_dropout":      0.08,
       "se_context_window": 64,
-      "use_learned_query": true
+      "use_learned_query": true,
+      "seq_len":           256,
+      "batch_size":        1024,
+      "lr":                3.5e-5,
+      "weight_decay":      4.5e-3
+    },
+
+    "EURUSD_1m_r11": {
+      "_comment": "From EURUSD_1m_dev. Raised dropout_out 0.55→0.60: R10 TV gap held >0.65 from ep7+ and reached 1.477 by ep13; stronger head regularisation needed. lr 3.5e-5→2e-5: 43% cut to slow hidden-state saturation. weight_decay 4.5e-3→7e-3: TV gap grew +1.245 in 7 epochs. All other architecture params unchanged. R11 (b12e2f4, n_rows=1.5M): best_ep=11 val_loss=3.789 ppt=0.095 | gnorm 2.66→65 over 19 eps (improved vs R10); TV gap held <0.25 through ep11, widened to +0.36 by ep19. Architecture OK; precision bottleneck is in the loss profile (→ r12).",
+      "hidden_dim":        176,
+      "num_layers":        3,
+      "bidirectional":     true,
+      "dropout":           0.30,
+      "dropout_out":       0.60,
+      "attn_heads":        8,
+      "attn_dropout":      0.08,
+      "se_context_window": 64,
+      "use_learned_query": true,
+      "seq_len":           256,
+      "batch_size":        1024,
+      "lr":                2e-5,
+      "weight_decay":      7e-3
+    },
+
+    "EURUSD_1m_r12": {
+      "_comment": "From EURUSD_1m_r11. Adjusted loss profile to improve precision bottleneck.",
+      "hidden_dim":        176,
+      "num_layers":        3,
+      "bidirectional":     true,
+      "dropout":           0.30,
+      "dropout_out":       0.60,
+      "attn_heads":        8,
+      "attn_dropout":      0.08,
+      "se_context_window": 64,
+      "use_learned_query": true,
+      "seq_len":           256,
+      "batch_size":        1024,
+      "lr":                2e-5,
+      "weight_decay":      7e-3
+    },
+
+    "EURUSD_1m_r13": {
+      "_comment": "From EURUSD_1m_r11. Architecture updated to use inter-layer LayerNorm (Change 1, 2026-05-xx): stacked single-layer LSTMs with LN between layers to prevent gnorm escalation (R11 gnorm reached 65 at ep19). Same hyperparams otherwise. R13: gnorm still escalated 19→194 over 20 eps (LN insufficient alone); pred collapse observed despite precision target met. Superseded by EURUSD_1m_r14.",
+      "hidden_dim":        176,
+      "num_layers":        3,
+      "bidirectional":     true,
+      "dropout":           0.30,
+      "dropout_out":       0.60,
+      "attn_heads":        8,
+      "attn_dropout":      0.08,
+      "se_context_window": 64,
+      "use_learned_query": true,
+      "seq_len":           256,
+      "batch_size":        1024,
+      "lr":                2e-5,
+      "weight_decay":      7e-3
+    },
+
+    "EURUSD_1m_r14": {
+      "_comment": "From EURUSD_1m_r13. gnorm escalated 19→194 despite inter-layer LN; loss profile changes dominate this run. lr 2e-5→1.7e-5: reduces update magnitude to slow gnorm escalation rate. weight_decay 7e-3→9e-3: stronger L2 to reinforce gnorm containment alongside existing LN. All architecture params unchanged. Pair with loss_profile=EURUSD_1m_r14. Expected: gnorm plateaus below 150; best_epoch 15-20+.",
+      "hidden_dim":        176,
+      "num_layers":        3,
+      "bidirectional":     true,
+      "dropout":           0.30,
+      "dropout_out":       0.60,
+      "attn_heads":        8,
+      "attn_dropout":      0.08,
+      "se_context_window": 64,
+      "use_learned_query": true,
+      "seq_len":           256,
+      "batch_size":        1024,
+      "lr":                1.7e-5,
+      "weight_decay":      9e-3
     },
 
     "prod": {
@@ -37,7 +165,11 @@
       "attn_heads":        8,
       "attn_dropout":      0.05,
       "se_context_window": 32,
-      "use_learned_query": true
+      "use_learned_query": true,
+      "seq_len":           256,
+      "batch_size":        512,
+      "lr":                1e-4,
+      "weight_decay":      1e-6
     },
 
     "large": {
@@ -50,7 +182,11 @@
       "attn_heads":        8,
       "attn_dropout":      0.05,
       "se_context_window": 64,
-      "use_learned_query": true
+      "use_learned_query": true,
+      "seq_len":           256,
+      "batch_size":        512,
+      "lr":                1e-4,
+      "weight_decay":      1e-6
     },
 
     "small": {
@@ -63,12 +199,33 @@
       "attn_heads":        4,
       "attn_dropout":      0.05,
       "se_context_window": 16,
-      "use_learned_query": true
+      "use_learned_query": true,
+      "seq_len":           256,
+      "batch_size":        256,
+      "lr":                1e-4,
+      "weight_decay":      1e-6
     }
   },
 
   "TCN": {
-    "prod": {
+    "US500_1m_r1": {
+      "_comment": "First US500 TCN profile. Base: TCN/prod. weight_decay 1e-6→5e-3: LSTM experiments confirmed US500 needs strong L2 (wd=3e-3 in LSTM r2 still gave train/val gap +2.06; 5e-3 aligns with EURUSD_1m_r11 which achieved stable training). lr 1e-4→5e-5: US500 label density ~2% per side; conservative LR avoids early overfitting on minority signal. dropout_out 0.40→0.45: moderate head regularisation matching LSTM learnings. se_context_window 32→64: larger SE context to capture intraday session patterns in US500 index. Receptive field = (3-1)×(1+2+4+8+16+32)+1 = 127 bars. Pair with loss-profile US500_1m_r3.",
+      "hidden_channels":   256,
+      "num_layers":        6,
+      "kernel_size":       3,
+      "dropout":           0.20,
+      "dropout_out":       0.45,
+      "attn_heads":        8,
+      "attn_dropout":      0.10,
+      "use_learned_query": true,
+      "se_context_window": 64,
+      "seq_len":           256,
+      "batch_size":        512,
+      "lr":                5e-5,
+      "weight_decay":      5e-3
+    },
+
+    "prod":{
       "_comment": "Production TCN. kernel_size=3, num_layers=6 → receptive field ≈ 253 bars (matches SEQ_LEN=256).",
       "hidden_channels":   256,
       "num_layers":        6,
@@ -78,7 +235,11 @@
       "attn_heads":        8,
       "attn_dropout":      0.10,
       "use_learned_query": true,
-      "se_context_window": 32
+      "se_context_window": 32,
+      "seq_len":           256,
+      "batch_size":        512,
+      "lr":                1e-4,
+      "weight_decay":      1e-6
     },
 
     "large": {
@@ -91,7 +252,11 @@
       "attn_heads":        8,
       "attn_dropout":      0.10,
       "use_learned_query": true,
-      "se_context_window": 64
+      "se_context_window": 64,
+      "seq_len":           512,
+      "batch_size":        256,
+      "lr":                1e-4,
+      "weight_decay":      1e-6
     },
 
     "small": {
@@ -104,7 +269,11 @@
       "attn_heads":        4,
       "attn_dropout":      0.10,
       "use_learned_query": true,
-      "se_context_window": 16
+      "se_context_window": 16,
+      "seq_len":           256,
+      "batch_size":        256,
+      "lr":                1e-4,
+      "weight_decay":      1e-6
     }
   }
 }
