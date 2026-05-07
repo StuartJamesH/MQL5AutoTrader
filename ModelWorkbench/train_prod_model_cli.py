@@ -176,6 +176,26 @@ def load_loss_profile(profile: str) -> dict:
 # Logging
 # ---------------------------------------------------------------------------
 
+class _RobustStreamHandler(logging.StreamHandler):
+    """StreamHandler that silently drops records when the console stream is
+    unavailable.  On Windows, stdout/stderr can raise OSError [Errno 22]
+    during flush() when the terminal pipe is disrupted mid-run (e.g. long
+    training sessions in PowerShell / Windows Terminal).  The file handler
+    is unaffected; this guard keeps the run alive without spam."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            super().emit(record)
+        except OSError:
+            pass
+
+    def flush(self) -> None:
+        try:
+            super().flush()
+        except OSError:
+            pass
+
+
 def setup_logging(log_file: Path, output_dir: Path, cloud_log: bool) -> logging.Logger:
     output_dir.mkdir(parents=True, exist_ok=True)
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -186,7 +206,7 @@ def setup_logging(log_file: Path, output_dir: Path, cloud_log: bool) -> logging.
 
     formatter = logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s")
 
-    stream_handler = logging.StreamHandler()
+    stream_handler = _RobustStreamHandler()
     stream_handler.setFormatter(formatter)
     logger.addHandler(stream_handler)
 
@@ -275,8 +295,10 @@ def add_outcomes(df: pd.DataFrame, outcome_params: dict) -> pd.DataFrame:
     d = df.copy()
     outcomes = calculate_trade_outcomes_all_candles(d, **outcome_params)
 
+    # 1:1 win/loss encoding (+1 win, -1 loss) matching production's symmetric
+    # TP:SL ratio.  No scaling applied — each trade contributes equally to PnL.
     for col in ["buy_outcome", "sell_outcome"]:
-        outcomes[col] = outcomes[col].where(outcomes[col] <= 0, outcomes[col] * 2)
+        outcomes[col] = outcomes[col]  # +1 (TP) / -1 (SL) / NaN→0 already correct
 
     d["sell_y"] = outcomes["sell_outcome"].fillna(0.0)
     d["buy_y"]  = outcomes["buy_outcome"].fillna(0.0)
@@ -764,7 +786,6 @@ def main(argv=None) -> None:
         "loss_components_curve": [],
     }
     best_model_state    = None
-    best_pnl_model_state = None
     epochs_no_improve   = 0
 
     logger.info(
@@ -838,7 +859,6 @@ def main(argv=None) -> None:
             if eval_pack["profit"] > history["best_pnl"]:
                 history["best_pnl"]       = eval_pack["profit"]
                 history["best_pnl_epoch"] = epoch
-                best_pnl_model_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
             _lc = eval_pack["loss_components"]
             _pd = eval_pack["pred_counts"]
@@ -846,6 +866,7 @@ def main(argv=None) -> None:
                 "Epoch %d | train=%.4f val=%.4f gap=%+.4f lr=%.2e gnorm=%.4f | "
                 "acc=%.4f profit=%.2f (S %.2f B %.2f) | "
                 "preds=[S:%d F:%d B:%d] | "
+                "prec[S=%.3f B=%.3f] rec[S=%.3f B=%.3f] | "
                 "loss[fce=%.3f pr=%.3f rec=%.3f dir=%.3f]%s",
                 epoch,
                 train_loss_epoch,
@@ -858,6 +879,8 @@ def main(argv=None) -> None:
                 eval_pack["profit_sell"],
                 eval_pack["profit_buy"],
                 _pd[0], _pd[1], _pd[2],
+                eval_pack["prec_sell"], eval_pack["prec_buy"],
+                eval_pack["rec_sell"],  eval_pack["rec_buy"],
                 _lc["focal_ce"], _lc["precision_loss"], _lc["recall_loss"], _lc["confusion_loss"],
                 best_tag,
             )
@@ -1044,24 +1067,6 @@ def main(argv=None) -> None:
 
     logger.info("Saved model pack  : %s", model_pack_path)
     logger.info("Saved summary JSON: %s", summary_path)
-
-    if best_pnl_model_state is not None and history["best_pnl_epoch"] != history["best_epoch"]:
-        pnl_model_path = output_dir / f"{model_name}_best_pnl_model.pkl"
-        model.load_state_dict({k: v.to(device) for k, v in best_pnl_model_state.items()})
-        pnl_eval = evaluate(model, data_pack["val_loader"], criterion, device, commission)
-        logger.info(
-            "Best PnL checkpoint | best_pnl_epoch=%d pnl=%.2f val_loss=%.6f",
-            history["best_pnl_epoch"], history["best_pnl"], pnl_eval["val_loss"],
-        )
-        pnl_model_info = dict(model_info)
-        pnl_model_info["best_epoch"] = history["best_pnl_epoch"]
-        pnl_model_info["checkpoint_criterion"] = "best_pnl"
-        with open(pnl_model_path, "wb") as fh:
-            pickle.dump(
-                {**_model_pack_base, "model": model.state_dict(), "model_info": pnl_model_info},
-                fh,
-            )
-        logger.info("Saved best PnL model pack: %s", pnl_model_path)
 
 
 if __name__ == "__main__":
