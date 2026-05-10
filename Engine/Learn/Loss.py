@@ -27,8 +27,8 @@ class TradeProfitabilityLoss(nn.Module):
 
     Forward signature is identical to the previous class:
         loss = criterion(logits, targets, trade_outcomes)
-    ``trade_outcomes`` is accepted but unused so the training loop requires no
-    changes.
+    ``trade_outcomes`` remains optional; when profit_weight > 0 it provides
+    realised sell/buy barrier outcomes for the expected-profit term.
     """
 
     def __init__(
@@ -43,6 +43,7 @@ class TradeProfitabilityLoss(nn.Module):
         recall_floor: float = 0.15,
         rec_floor_weight: float = 20.0,
         direction_penalty: float = 1.5,
+        profit_weight: float = 0.0,
         eps: float = 1e-6,
         label_smoothing: float = 0.0,
     ):
@@ -68,6 +69,15 @@ class TradeProfitabilityLoss(nn.Module):
             rec_floor_weight:  Strength of the quadratic recall floor hinge.
                                Increase (e.g. to 30–40) if a class still collapses.
             direction_penalty: Weight on the SELL↔BUY direction confusion penalty.
+            profit_weight:     Weight on the expected-profit term. When > 0, uses precomputed
+                               per-bar trade outcomes (shape [B, 2]: sell_outcome, buy_outcome;
+                               values +1=TP hit, -1=SL hit, 0=unresolved) passed as
+                               trade_outcomes to forward(). The term is
+                               -profit_weight × mean(p_sell × sell_out + p_buy × buy_out).
+                               Unlike the precision penalty, this is label-agnostic and rewards
+                               predictions on ANY bar with a profitable realised outcome,
+                               including regime-filtered bars that the labeller assigned FLAT.
+                               Set to 0.0 (default) to disable and preserve existing behaviour.
             eps:               Numerical stability constant.
             label_smoothing:   Label smoothing coefficient for focal CE (0.0 = off, 0.05 recommended).
                                Bounds the maximum CE gradient, smoothing the precision↔recall adversarial cycle.
@@ -84,10 +94,11 @@ class TradeProfitabilityLoss(nn.Module):
         self.recall_floor     = float(recall_floor)
         self.rec_floor_weight = float(rec_floor_weight)
         self.direction_penalty = float(direction_penalty)
+        self.profit_weight = float(profit_weight)
         self.eps = float(eps)
         self.label_smoothing = float(label_smoothing)
 
-    def forward(self, logits, targets, trade_outcomes=None, return_components: bool = False):  # trade_outcomes unused; kept for API parity
+    def forward(self, logits, targets, trade_outcomes=None, return_components: bool = False):
         probs = torch.softmax(logits, dim=1)
 
         # ── 1. Focal cross-entropy ────────────────────────────────────────────
@@ -102,9 +113,6 @@ class TradeProfitabilityLoss(nn.Module):
         true_buy  = (targets == self.buy_cls).float()
 
         # ── 2. Per-class soft precision (SELL and BUY independently) ─────────
-        # prec_c = sum(p_c on true-c bars) / sum(p_c on all bars)
-        # Gradients push two things simultaneously: raise p_c on true-c bars,
-        # and lower p_c on non-c bars.
         prec_sell = (p_sell * true_sell).sum() / (p_sell.sum() + self.eps)
         prec_buy  = (p_buy  * true_buy ).sum() / (p_buy.sum()  + self.eps)
         precision_loss = (
@@ -113,7 +121,6 @@ class TradeProfitabilityLoss(nn.Module):
         ) / 2.0
 
         # ── 3. Recall floor hinge (quadratic below floor, zero above) ────────
-        # rec_c = sum(p_c on true-c bars) / count(true-c bars)
         rec_sell = (p_sell * true_sell).sum() / (true_sell.sum() + self.eps)
         rec_buy  = (p_buy  * true_buy ).sum() / (true_buy.sum()  + self.eps)
         hinge_sell = F.relu(self.recall_floor - rec_sell) ** 2
@@ -121,15 +128,28 @@ class TradeProfitabilityLoss(nn.Module):
         recall_loss = self.rec_floor_weight * (hinge_sell + hinge_buy)
 
         # ── 4. Direction confusion penalty ────────────────────────────────────
-        # Penalise placing BUY mass on true-SELL bars and SELL mass on true-BUY bars.
         n_trade = true_sell.sum() + true_buy.sum() + self.eps
         confusion = (
-            (p_buy  * true_sell).sum() +   # BUY mass on SELL bars
-            (p_sell * true_buy ).sum()      # SELL mass on BUY bars
+            (p_buy  * true_sell).sum() +
+            (p_sell * true_buy ).sum()
         ) / n_trade
         confusion_loss = self.direction_penalty * confusion
 
-        total = mean_focal + precision_loss + recall_loss + confusion_loss
+        # ── 5. Expected profit (label-agnostic; uses realised barrier outcomes) ──
+        # trade_outcomes shape: (B, 2) — [:, 0]=sell_outcome, [:, 1]=buy_outcome
+        # Values: +1 (TP hit), -1 (SL hit), 0 (unresolved/neutral)
+        # Rewards p_sell↑ on bars where sell is profitable regardless of label.
+        # Handles direction implicitly: predicting BUY on a bar where sell_out=+1
+        # but buy_out=-1 incurs a buy penalty without needing direction_penalty.
+        if self.profit_weight > 0.0 and trade_outcomes is not None:
+            sell_out = trade_outcomes[:, 0].float()   # (B,)
+            buy_out  = trade_outcomes[:, 1].float()   # (B,)
+            expected_profit = (p_sell * sell_out + p_buy * buy_out).mean()
+            profit_loss = -self.profit_weight * expected_profit
+        else:
+            profit_loss = torch.tensor(0.0, device=logits.device)
+
+        total = mean_focal + precision_loss + recall_loss + confusion_loss + profit_loss
         if return_components:
             return {
                 "total":           float(total.item()) if not total.requires_grad else total,
@@ -137,6 +157,7 @@ class TradeProfitabilityLoss(nn.Module):
                 "precision_loss":  float(precision_loss.item()) if not precision_loss.requires_grad else precision_loss,
                 "recall_loss":     float(recall_loss.item()) if not recall_loss.requires_grad else recall_loss,
                 "confusion_loss":  float(confusion_loss.item()) if not confusion_loss.requires_grad else confusion_loss,
+                "profit_loss":     float(profit_loss.item()) if not profit_loss.requires_grad else profit_loss,
             }
         return total
 
