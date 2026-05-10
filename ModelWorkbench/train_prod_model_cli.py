@@ -439,6 +439,7 @@ def evaluate(model, loader, criterion, device, commission: float = 0.0) -> dict:
         "precision_loss": float(_loss_out["precision_loss"].item()) if hasattr(_loss_out["precision_loss"], "item") else float(_loss_out["precision_loss"]),
         "recall_loss":    float(_loss_out["recall_loss"].item())    if hasattr(_loss_out["recall_loss"],    "item") else float(_loss_out["recall_loss"]),
         "confusion_loss": float(_loss_out["confusion_loss"].item()) if hasattr(_loss_out["confusion_loss"], "item") else float(_loss_out["confusion_loss"]),
+        "profit_loss":    float(_loss_out["profit_loss"].item())    if hasattr(_loss_out.get("profit_loss", 0.0), "item") else float(_loss_out.get("profit_loss", 0.0)),
     }
     del full_logits, full_targets, full_outcomes
 
@@ -552,8 +553,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"Profile key in {_LOSS_PARAMS_FILE.name}.")
 
     # --- Data ---
-    p.add_argument("--n-rows",        type=int,   default=None,
-                   help="Use only the last N rows of the dataset (None = all rows).")
+    p.add_argument("--n-rows",        type=int,   default=1_500_000,
+                   help="Use only the last N rows of the dataset (default: 1_500_000).")
     p.add_argument("--val-bars",      type=int,   default=_DEFAULTS["val_bars"],
                    help="Number of tail bars reserved for validation.")
     p.add_argument("--min-train-rows",type=int,   default=_DEFAULTS["min_train_rows"],
@@ -867,7 +868,7 @@ def main(argv=None) -> None:
                 "acc=%.4f profit=%.2f (S %.2f B %.2f) | "
                 "preds=[S:%d F:%d B:%d] | "
                 "prec[S=%.3f B=%.3f] rec[S=%.3f B=%.3f] | "
-                "loss[fce=%.3f pr=%.3f rec=%.3f dir=%.3f]%s",
+                "loss[fce=%.3f pr=%.3f rec=%.3f dir=%.3f pft=%.3f]%s",
                 epoch,
                 train_loss_epoch,
                 eval_pack["val_loss"],
@@ -881,7 +882,7 @@ def main(argv=None) -> None:
                 _pd[0], _pd[1], _pd[2],
                 eval_pack["prec_sell"], eval_pack["prec_buy"],
                 eval_pack["rec_sell"],  eval_pack["rec_buy"],
-                _lc["focal_ce"], _lc["precision_loss"], _lc["recall_loss"], _lc["confusion_loss"],
+                _lc["focal_ce"], _lc["precision_loss"], _lc["recall_loss"], _lc["confusion_loss"], _lc.get("profit_loss", 0.0),
                 best_tag,
             )
 
