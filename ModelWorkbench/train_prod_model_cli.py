@@ -913,8 +913,9 @@ def main(argv=None) -> None:
         "pred_dist": [],
         "loss_components_curve": [],
     }
-    best_model_state    = None
-    epochs_no_improve   = 0
+    best_model_state       = None
+    best_gated_model_state = None
+    epochs_no_improve      = 0
 
     logger.info(
         "Training start | epochs=%d | batches train=%d val=%d",
@@ -981,6 +982,7 @@ def main(argv=None) -> None:
             if not math.isnan(g_pnl) and g_pnl > history["best_gated_pnl"]:
                 history["best_gated_pnl"]       = g_pnl
                 history["best_gated_pnl_epoch"] = epoch
+                best_gated_model_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
             if eval_pack["val_loss"] < history["best_val_loss"]:
                 history["best_val_loss"] = eval_pack["val_loss"]
@@ -1145,10 +1147,37 @@ def main(argv=None) -> None:
             fh,
         )
 
+    # --- Save best-gated-PnL checkpoint (separate file) ---
+    gated_model_pack_path = None
+    if best_gated_model_state is not None:
+        gated_model_info = {
+            **model_info,
+            "checkpoint_type": "best_gated_pnl",
+            "best_epoch":      history["best_gated_pnl_epoch"],
+            "best_gated_pnl":  history["best_gated_pnl"],
+        }
+        gated_model_pack_path = (
+            Path(str(model_pack_path).replace("_model.pkl", "_gated_model.pkl"))
+            if not resume_pack
+            else Path(str(resume_model_pack_path).replace("_model.pkl", "_gated_model.pkl"))
+        )
+        with open(gated_model_pack_path, "wb") as fh:
+            pickle.dump(
+                {**_model_pack_base, "model": best_gated_model_state, "model_info": gated_model_info},
+                fh,
+            )
+        logger.info(
+            "Best gated PnL checkpoint | best_gated_pnl_epoch=%d gated_pnl=%.2f | %s",
+            history["best_gated_pnl_epoch"], history["best_gated_pnl"], gated_model_pack_path,
+        )
+    else:
+        logger.info("No gated PnL checkpoint saved (no finite gated_pnl recorded).")
+
     summary = {
-        "model_name":  model_name,
-        "model_pack":  str(model_pack_path),
-        "plot_path":   str(output_dir / f"{model_name}_plots.png"),
+        "model_name":        model_name,
+        "model_pack":        str(model_pack_path),
+        "gated_model_pack":  str(gated_model_pack_path) if gated_model_pack_path else None,
+        "plot_path":         str(output_dir / f"{model_name}_plots.png"),
         "config": {
             "symbol":         args.symbol,
             "dataset":        ds_name,
