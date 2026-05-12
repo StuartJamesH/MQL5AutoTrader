@@ -45,8 +45,9 @@ from Learn.features import (
     _add_features_US2000,
     _add_features_XAUUSD,
     _add_features_SpotCrude,
+    donchian_trend,
 )
-from Learn.labels import causal_triple_barrier_hilow_trend_labeler, calculate_trade_outcomes_all_candles
+from Learn.labels import causal_triple_barrier_hilow_trend_labeler, calculate_trade_outcomes_all_candles, causal_market_regime
 from Learn.preprocess import preprocess_ohlcv
 from Learn.Loaders import SequenceDataset
 from Learn.Models import LSTMAttentionSEClassifier, TCNAttentionSEClassifier
@@ -400,6 +401,57 @@ def build_dataloaders(
     }
 
 
+
+# ---------------------------------------------------------------------------
+# Validation-set gate arrays (pre-computed once before the training loop)
+# ---------------------------------------------------------------------------
+
+def _build_val_gate_arrays(
+    df_val_raw: pd.DataFrame,
+    regime_params: dict,
+    seq_len: int,
+) -> dict:
+    """Pre-compute structural gate arrays aligned to validation prediction positions.
+
+    Prediction k (0-indexed, shuffle=False) comes from sequence i=k which covers
+    X_val[k : k+seq_len].  The label anchor is at row ``k + seq_len - 1`` in
+    df_val_raw (confirmed by SequenceDataset.__getitem__: y[i+seq_len-1]).
+
+    Returns numpy arrays of length n_preds = len(df_val_raw) - seq_len:
+      regime    — causal_market_regime output (+1 / 0 / -1) at anchor bar
+      donchian  — donchian_trend output (+1 / 0 / -1) at anchor bar
+      sig_high  — anchor bar High (breakout: BUY needs next bar to exceed this)
+      sig_low   — anchor bar Low  (breakout: SELL needs next bar to fall below this)
+      next_high — bar after anchor High
+      next_low  — bar after anchor Low
+    """
+    n_rows  = len(df_val_raw)
+    n_preds = n_rows - seq_len
+
+    regime_series = causal_market_regime(df_val_raw.copy(), **regime_params)
+    regime_arr    = regime_series.values  # (n_rows,)
+
+    don_length   = regime_params.get("atr_window", 14)
+    donchian_arr = donchian_trend(df_val_raw, length=don_length).values  # (n_rows,)
+
+    high_arr = df_val_raw["High"].values
+    low_arr  = df_val_raw["Low"].values
+
+    # anchor bar for prediction k is at row k + seq_len - 1
+    anc = slice(seq_len - 1, n_rows - 1)  # length = n_preds
+    # next bar (breakout confirmation) is at row k + seq_len
+    nxt = slice(seq_len, n_rows)           # length = n_preds
+
+    return {
+        "regime":    regime_arr[anc].copy(),
+        "donchian":  donchian_arr[anc].copy(),
+        "sig_high":  high_arr[anc].copy(),
+        "sig_low":   low_arr[anc].copy(),
+        "next_high": high_arr[nxt].copy(),
+        "next_low":  low_arr[nxt].copy(),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
@@ -476,7 +528,72 @@ def evaluate(model, loader, criterion, device, commission: float = 0.0) -> dict:
         "loss_components": loss_components,
         "targets":         all_targets_np,
         "preds":           all_preds_np,
+        "outcomes":        all_outcomes_np,
     }
+
+
+# ---------------------------------------------------------------------------
+# Post-gate PnL (regime + breakout + Donchian)
+# ---------------------------------------------------------------------------
+
+def _compute_gated_pnl(
+    all_preds: np.ndarray,
+    all_outcomes: np.ndarray,
+    gate_arrays: dict,
+    commission: float = 0.0,
+) -> tuple[float, float, int, int]:
+    """Apply the three production gates to val predictions and compute PnL.
+
+    Gates (matching 3_0 Review Model - Multiclass.ipynb Cell 15):
+      1. Regime  — BUY only when regime == +1; SELL only when regime == -1
+      2. Breakout — BUY only when next-bar High > signal-bar High;
+                    SELL only when next-bar Low  < signal-bar Low
+      3. Donchian — BUY only when donchian_trend > 0;
+                    SELL only when donchian_trend < 0
+
+    Returns (gated_total_pnl, gated_ppt, n_sell_gated, n_buy_gated).
+    Returns (nan, nan, 0, 0) if prediction count doesn't match gate arrays.
+    """
+    n_gate = len(gate_arrays["regime"])
+    if len(all_preds) != n_gate:
+        return float("nan"), float("nan"), 0, 0
+
+    preds = all_preds.copy()
+
+    # Gate 1: Regime
+    regime = gate_arrays["regime"]
+    preds[(preds == 2) & (regime != 1)]  = 1
+    preds[(preds == 0) & (regime != -1)] = 1
+
+    # Gate 2: Breakout (next bar must confirm direction)
+    next_high = gate_arrays["next_high"]
+    next_low  = gate_arrays["next_low"]
+    sig_high  = gate_arrays["sig_high"]
+    sig_low   = gate_arrays["sig_low"]
+    preds[(preds == 2) & (next_high <= sig_high)] = 1
+    preds[(preds == 0) & (next_low  >= sig_low)]  = 1
+
+    # Gate 3: Donchian channel trend
+    donchian = gate_arrays["donchian"]
+    preds[(preds == 2) & (donchian <= 0)] = 1
+    preds[(preds == 0) & (donchian >= 0)] = 1
+
+    sell_mask = preds == 0
+    buy_mask  = preds == 2
+
+    sell_net = all_outcomes[:, 0] - commission * np.abs(all_outcomes[:, 0])
+    buy_net  = all_outcomes[:, 1] - commission * np.abs(all_outcomes[:, 1])
+
+    profit_sell = float(sell_net[sell_mask].sum()) if sell_mask.any() else 0.0
+    profit_buy  = float(buy_net[buy_mask].sum())   if buy_mask.any()  else 0.0
+
+    n_sell    = int(sell_mask.sum())
+    n_buy     = int(buy_mask.sum())
+    n_trades  = n_sell + n_buy
+    total_pnl = profit_sell + profit_buy
+    gated_ppt = total_pnl / n_trades if n_trades > 0 else float("nan")
+
+    return total_pnl, gated_ppt, n_sell, n_buy
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +640,7 @@ def save_plots(
     out_path = output_dir / f"{model_name}_plots.png"
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
+    return out_path
 
 
 # ---------------------------------------------------------------------------
@@ -714,6 +832,13 @@ def main(argv=None) -> None:
         resume_scaler=_resume_scaler,
     )
 
+    # --- Pre-compute validation gate arrays (regime + breakout + Donchian) ---
+    gate_arrays = _build_val_gate_arrays(df_val_raw, _regime_params, _seq_len)
+    logger.info(
+        "Val gate arrays built | n_preds=%d (regime±1, breakout, donchian gates active)",
+        len(gate_arrays["regime"]),
+    )
+
     # --- Class weights and bias init ---
     y_train_arr = np.array(data_pack["y_train"])
     p_sell = float((y_train_arr == 0).mean())
@@ -776,11 +901,13 @@ def main(argv=None) -> None:
         "train_losses": [], "val_losses_all": [],
         "f1_sell": [], "prec_sell": [], "rec_sell": [],
         "f1_buy":  [], "prec_buy":  [], "rec_buy":  [],
-        "pnl": [],
+        "pnl": [], "gated_pnl": [],
         "best_val_loss": float("inf"),
         "best_epoch": -1,
         "best_pnl": float("-inf"),
         "best_pnl_epoch": -1,
+        "best_gated_pnl": float("-inf"),
+        "best_gated_pnl_epoch": -1,
         "grad_norms": [],
         "lr_curve": [],
         "pred_dist": [],
@@ -847,6 +974,14 @@ def main(argv=None) -> None:
             history["pred_dist"].append(eval_pack["pred_counts"])
             history["loss_components_curve"].append(eval_pack["loss_components"])
 
+            g_pnl, g_ppt, g_sell, g_buy = _compute_gated_pnl(
+                eval_pack["preds"], eval_pack["outcomes"], gate_arrays, commission
+            )
+            history["gated_pnl"].append(g_pnl)
+            if not math.isnan(g_pnl) and g_pnl > history["best_gated_pnl"]:
+                history["best_gated_pnl"]       = g_pnl
+                history["best_gated_pnl_epoch"] = epoch
+
             if eval_pack["val_loss"] < history["best_val_loss"]:
                 history["best_val_loss"] = eval_pack["val_loss"]
                 history["best_epoch"]    = epoch
@@ -863,10 +998,12 @@ def main(argv=None) -> None:
 
             _lc = eval_pack["loss_components"]
             _pd = eval_pack["pred_counts"]
+            _g_pnl_str = f"{g_pnl:.2f}" if not math.isnan(g_pnl) else "nan"
+            _g_ppt_str = f"{g_ppt:.3f}" if not math.isnan(g_ppt) else "nan"
             logger.info(
                 "Epoch %d | train=%.4f val=%.4f gap=%+.4f lr=%.2e gnorm=%.4f | "
                 "acc=%.4f profit=%.2f (S %.2f B %.2f) | "
-                "preds=[S:%d F:%d B:%d] | "
+                "preds=[S:%d F:%d B:%d] | gated_pnl=%s (S:%d B:%d ppt=%s) | "
                 "prec[S=%.3f B=%.3f] rec[S=%.3f B=%.3f] | "
                 "loss[fce=%.3f pr=%.3f rec=%.3f dir=%.3f pft=%.3f]%s",
                 epoch,
@@ -880,6 +1017,7 @@ def main(argv=None) -> None:
                 eval_pack["profit_sell"],
                 eval_pack["profit_buy"],
                 _pd[0], _pd[1], _pd[2],
+                _g_pnl_str, g_sell, g_buy, _g_ppt_str,
                 eval_pack["prec_sell"], eval_pack["prec_buy"],
                 eval_pack["rec_sell"],  eval_pack["rec_buy"],
                 _lc["focal_ce"], _lc["precision_loss"], _lc["recall_loss"], _lc["confusion_loss"], _lc.get("profit_loss", 0.0),
@@ -919,7 +1057,8 @@ def main(argv=None) -> None:
     model_name = "_".join([ds_title, model_type, f"{_seq_len}seq", run_id, run_ts, args.model_version])
 
     if history["val_losses_all"]:
-        save_plots(model_name, history, final_eval, output_dir, commission)
+        plot_path = save_plots(model_name, history, final_eval, output_dir, commission)
+        logger.info("Saved plots       : %s", plot_path)
     else:
         logger.warning("No epoch history to plot — skipping plot generation.")
 
@@ -1036,10 +1175,12 @@ def main(argv=None) -> None:
             "val_start_time":  str(df_val_raw["Time"].iloc[0]),
         },
         "best": {
-            "best_epoch":     history["best_epoch"],
-            "best_val_loss":  history["best_val_loss"],
-            "best_pnl":       history["best_pnl"],
-            "best_pnl_epoch": history["best_pnl_epoch"],
+            "best_epoch":              history["best_epoch"],
+            "best_val_loss":           history["best_val_loss"],
+            "best_pnl":                history["best_pnl"],
+            "best_pnl_epoch":          history["best_pnl_epoch"],
+            "best_gated_pnl":          history["best_gated_pnl"],
+            "best_gated_pnl_epoch":    history["best_gated_pnl_epoch"],
         },
         "curves": {
             "train_loss":        history["train_losses"],
@@ -1051,6 +1192,7 @@ def main(argv=None) -> None:
             "recall_sell":       history["rec_sell"],
             "recall_buy":        history["rec_buy"],
             "pnl":               history["pnl"],
+            "gated_pnl":         [x if not (isinstance(x, float) and math.isnan(x)) else None for x in history["gated_pnl"]],
             "grad_norms":        history["grad_norms"],
             "lr_curve":          history["lr_curve"],
             "pred_dist":         history["pred_dist"],
