@@ -51,7 +51,7 @@ from Learn.labels import causal_triple_barrier_hilow_trend_labeler, calculate_tr
 from Learn.preprocess import preprocess_ohlcv
 from Learn.Loaders import SequenceDataset
 from Learn.Models import LSTMAttentionSEClassifier, TCNAttentionSEClassifier
-from Learn.Loss import TradeProfitabilityLoss
+from Learn.Loss import TradeProfitabilityLoss, GatedVolumeFocalLoss
 
 _GATED_MIN_PRECISION = 0.30
 
@@ -500,6 +500,7 @@ def evaluate(model, loader, criterion, device, commission: float = 0.0) -> dict:
     val_loss = float(_loss_out["total"].item()) if hasattr(_loss_out["total"], "item") else float(_loss_out["total"])
     loss_components = {
         "focal_ce":       float(_loss_out["focal_ce"].item())       if hasattr(_loss_out["focal_ce"],       "item") else float(_loss_out["focal_ce"]),
+        "vol_loss":       float(_loss_out.get("vol_loss", 0.0).item()) if hasattr(_loss_out.get("vol_loss", 0.0), "item") else float(_loss_out.get("vol_loss", 0.0)),
         "precision_loss": float(_loss_out["precision_loss"].item()) if hasattr(_loss_out["precision_loss"], "item") else float(_loss_out["precision_loss"]),
         "recall_loss":    float(_loss_out["recall_loss"].item())    if hasattr(_loss_out["recall_loss"],    "item") else float(_loss_out["recall_loss"]),
         "confusion_loss": float(_loss_out["confusion_loss"].item()) if hasattr(_loss_out["confusion_loss"], "item") else float(_loss_out["confusion_loss"]),
@@ -896,9 +897,14 @@ def main(argv=None) -> None:
         logger.info("Loaded model weights from resume pack.")
 
     # --- Loss ---
+    _LOSS_CLASS_MAP = {
+        "TradeProfitabilityLoss": TradeProfitabilityLoss,
+        "GatedVolumeFocalLoss":   GatedVolumeFocalLoss,
+    }
     loss_params = dict(base_loss_params)
     loss_params["alpha"] = class_weights
-    criterion = TradeProfitabilityLoss(**loss_params)
+    _loss_class_name = loss_params.pop("loss_class", "TradeProfitabilityLoss")
+    criterion = _LOSS_CLASS_MAP[_loss_class_name](**loss_params)
 
     # --- Optimiser and scheduler ---
     optimizer    = torch.optim.AdamW(model.parameters(), lr=_resolved_lr, weight_decay=_resolved_weight_decay)
@@ -1034,7 +1040,7 @@ def main(argv=None) -> None:
                 "preds=[S:%d F:%d B:%d] | gated_preds=[S:%d F:%d B:%d] | "
                 "gated_pnl=%s (S:%s B:%s ppt=%s) | "
                 "prec[S=%.3f B=%.3f] rec[S=%.3f B=%.3f] | "
-                "loss[fce=%.3f pr=%.3f rec=%.3f dir=%.3f pft=%.3f]%s",
+                "loss[fce=%.3f vol=%.3f pr=%.3f rec=%.3f dir=%.3f pft=%.3f]%s",
                 epoch,
                 train_loss_epoch,
                 eval_pack["val_loss"],
@@ -1050,7 +1056,7 @@ def main(argv=None) -> None:
                 _g_pnl_str, _g_pnl_sell_str, _g_pnl_buy_str, _g_ppt_str,
                 eval_pack["prec_sell"], eval_pack["prec_buy"],
                 eval_pack["rec_sell"],  eval_pack["rec_buy"],
-                _lc["focal_ce"], _lc["precision_loss"], _lc["recall_loss"], _lc["confusion_loss"], _lc.get("profit_loss", 0.0),
+                _lc["focal_ce"], _lc.get("vol_loss", 0.0), _lc["precision_loss"], _lc["recall_loss"], _lc["confusion_loss"], _lc.get("profit_loss", 0.0),
                 best_tag,
             )
 
@@ -1110,7 +1116,7 @@ def main(argv=None) -> None:
         "loss_profile":   args.loss_profile,
     }
 
-    loss_params_serializable = {**loss_params, "alpha": loss_params["alpha"].cpu().tolist()}
+    loss_params_serializable = {**loss_params, "alpha": loss_params["alpha"].cpu().tolist(), "loss_class": _loss_class_name}
 
     model_pack_path = (
         resume_model_pack_path
@@ -1137,8 +1143,8 @@ def main(argv=None) -> None:
         "rollover_window":          _rollover,
         "input_shape":              (_seq_len, data_pack["X_train"].shape[1]),
         "loss_params":              loss_params_serializable,
-        "loss_function":            TradeProfitabilityLoss,
-        "loss_function_source":     inspect.getsource(TradeProfitabilityLoss),
+        "loss_function":            criterion.__class__,
+        "loss_function_source":     inspect.getsource(criterion.__class__),
         "data_split": {
             "split_method":    "tail_val_bars",
             "val_bars":        args.val_bars,
