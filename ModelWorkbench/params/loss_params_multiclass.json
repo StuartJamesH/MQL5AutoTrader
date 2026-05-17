@@ -1,169 +1,501 @@
 {
   "_comment": "Loss function profiles for TradeProfitabilityLoss (multiclass). Select with --loss-profile. 'alpha' (class weights tensor) is computed automatically from the training label distribution — do not add it here.",
-
   "US500_1m_dev": {
     "_comment": "US500 1m dev profile. Reduced gamma+pr_weight to prevent BUY collapse; strong rec_floor_weight to overcome L2 minority suppression. R(Apr30): best_ep=7 val_loss=7.34 prec_S=0.363 prec_B=0.473 ppt=0.234 — BUY recall (0.119) was BELOW recall_floor (0.15) every single epoch; rec_floor_weight=90 fired each epoch creating violent corrections and oscillating val loss (range 7.34–8.79). ppt improved to 0.466 at ep13 despite rising val_loss → val_loss not a good proxy; model never converged cleanly. Superseded by US500_1m_r2.",
-    "gamma":             2.0,
-    "trade_classes":     [0, 2],
-    "pr_weight":         10.0,
-    "recall_floor":      0.15,
-    "rec_floor_weight":  90.0,
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 10.0,
+    "recall_floor": 0.15,
+    "rec_floor_weight": 90.0,
     "direction_penalty": 1.5,
-    "eps":               1e-6
+    "eps": 1e-06
   },
-
   "US500_1m_r2": {
     "_comment": "From US500_1m_dev. Fixed oscillating val loss: recall_floor 0.15→0.10 (BUY recall was 0.06–0.12 every epoch, always below 0.15 floor; collapse guard must sit below natural operating recall). rec_floor_weight 90→15 (90 created violent per-epoch corrections causing val_loss range 7.34–8.79; 15 is a gentle collapse guard). gamma 2.0→2.5 (sparse 1.97%/2.12% SELL/BUY labels benefit from harder-example focus). direction_penalty 1.5→0.5 (noisy signal with ~933/1030 labels per direction in 50k val set; reduce interference). pr_weight stays at 10.0 (BUY precision already 0.47–0.53; removing floor interference expected to raise SELL precision from 0.36 toward target 0.45). R1: best_ep=7 val_loss=7.34 profit=153 (S=43 B=110) — interrupted ep14; val loss still oscillated 7.34–8.79; SELL direction recovered after ep3 but prec_S historically 0.363 (below 0.40 floor). Superseded by US500_1m_r3.",
-    "gamma":             2.5,
-    "trade_classes":     [0, 2],
-    "pr_weight":         10.0,
-    "recall_floor":      0.10,
-    "rec_floor_weight":  15.0,
+    "gamma": 2.5,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 10.0,
+    "recall_floor": 0.1,
+    "rec_floor_weight": 15.0,
     "direction_penalty": 0.5,
-    "eps":               1e-6
+    "eps": 1e-06
   },
-
   "US500_1m_r3": {
     "_comment": "From US500_1m_r2. R1 outcome: prec_S=0.363 historically (below 0.40 floor); val loss still oscillated 7.34–8.79. pr_weight 10.0→11.0: SELL precision was 0.363 in dev run; increase precision pressure to push toward 0.40+ floor. label_smoothing 0→0.05: sparse 1.97%/2.12% SELL/BUY labels; smoothing prevents overconfident minority predictions and reduces oscillation caused by the model swinging between precision modes. Keep recall_floor=0.10 and rec_floor_weight=15 (gentle collapse guard working correctly in r2 — hinge should only fire on collapse). Keep direction_penalty=0.5 (SELL direction recovered well in r2 run after ep3). Pair with model-profile US500_1m_r3 (LSTM) or US500_1m_r1 (TCN). R1: best_ep=0 (FAILED) — label_smoothing=0.05 with focal loss (gamma=2.5) and pr_weight=11 created conflicting gradients: smoothing assigned small SELL/BUY targets to FLAT bars opposing the precision penalty; BUY preds collapsed to 4 at ep2 (recall ≈ 0.004 << floor 0.10); gnorm escalated 73→145. Superseded by US500_1m_r4.",
-    "gamma":             2.5,
-    "trade_classes":     [0, 2],
-    "pr_weight":         11.0,
-    "recall_floor":      0.10,
-    "rec_floor_weight":  15.0,
+    "gamma": 2.5,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 11.0,
+    "recall_floor": 0.1,
+    "rec_floor_weight": 15.0,
     "direction_penalty": 0.5,
-    "label_smoothing":   0.05,
-    "eps":               1e-6
+    "label_smoothing": 0.05,
+    "eps": 1e-06
   },
-
   "US500_1m_r4": {
-    "_comment": "From US500_1m_r3. R1 failure analysis: (1) label_smoothing=0.05 with focal loss (gamma=2.5) conflicted with pr_weight=11.0 — smoothing assigns small SELL/BUY probability targets to FLAT bars, directly opposing the precision penalty that penalises false SELL/BUY predictions; result was oscillating gradients and BUY collapse to 4 preds at ep2. Remove label_smoothing. (2) pr_weight=11.0 too aggressive: BUY already below recall_floor at ep0 (71 preds / 1030 true BUY = recall 0.069 < floor 0.10); pr_weight 11.0→9.0 to allow model to sustain >103 correct BUY predictions needed to stay above floor. All other params unchanged from r3. Pair with model-profile US500_1m_r4.",
-    "gamma":             2.5,
-    "trade_classes":     [0, 2],
-    "pr_weight":         9.0,
-    "recall_floor":      0.10,
-    "rec_floor_weight":  15.0,
+    "_comment": "From US500_1m_r3. R1 failure analysis: (1) label_smoothing=0.05 with focal loss (gamma=2.5) conflicted with pr_weight=11.0 — smoothing assigns small SELL/BUY probability targets to FLAT bars, directly opposing the precision penalty that penalises false SELL/BUY predictions; result was oscillating gradients and BUY collapse to 4 preds at ep2. Remove label_smoothing. (2) pr_weight=11.0 too aggressive: BUY already below recall_floor at ep0 (71 preds / 1030 true BUY = recall 0.069 < floor 0.10); pr_weight 11.0→9.0 to allow model to sustain >103 correct BUY predictions needed to stay above floor. All other params unchanged from r3. Pair with model-profile US500_1m_r4. R1: best_ep=5 val_loss=5.41 prec_S=0.396 prec_B=0.601 rec_S=0.017 rec_B=0.068 ppt=0.110 — SELL recall collapsed to 0.017 at best epoch (far below floor=0.10); rec_floor_weight=15 was too weak (recall hinge ~2% of pr_loss at collapse point). gnorm escalated 52→227 over 16 epochs. Overfitting gap grew to +3.33 by ep15. Superseded by US500_1m_r5.",
+    "gamma": 2.5,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 9.0,
+    "recall_floor": 0.1,
+    "rec_floor_weight": 15.0,
     "direction_penalty": 0.5,
-    "eps":               1e-6
+    "eps": 1e-06
   },
-
-  "XAUUSD_1m_dev":{
+  "US500_1m_r5": {
+    "_comment": "From US500_1m_r4. New objective: recall ≥0.20 per direction while maximising precision. R4 R1: SELL recall collapsed to 0.017 at best_ep=5; rec_floor_weight=15 contributed only ~2% of pr_loss at collapse — completely overpowered. Changes: (1) recall_floor 0.10→0.20: directly enforces user requirement of ≥0.20 recall per direction. (2) rec_floor_weight 15→40: at floor=0.20 with rec_sell=0.10, hinge=40×[(0.10)²+(0.10)²]=0.80 vs pr≈4.5 — hinge is ~18% of pr when recall is halfway below floor, meaningful gradient toward floor but not violent. (3) pr_weight 9.0→7.5: reduce precision pressure to give gradient budget for the higher recall requirement; model cannot simultaneously maintain prec≥0.45 and rec≥0.20 with pr_weight=9. (4) gamma 2.5→2.0: more stable focal gradient consistent with EURUSD successful runs; at 2.5 with 95% FLAT, sparse minority gradients become unstable. direction_penalty unchanged at 0.5 (contributing ≈0.000 in r4 — not the issue). Expected: rec_S≥0.18 rec_B≥0.18 at best epoch; prec_S and prec_B in 0.38–0.46 range. Pair with model-profile US500_1m_r4. R1 (INTERRUPTED at ep10, best_ep=5): val_loss=4.581 prec_S=0.401 prec_B=0.469 rec_S=0.225 rec_B=0.188 ppt=-0.118. Recall floor DID work — both recalls near/above 0.20 vs r4's 0.017/0.068. However pr_weight=7.5 insufficient: precision 0.40–0.47 all runs, always below 50% break-even (tp=sl=2.5). Violent hinge oscillation from ep8: rec_loss=0.450 as BUY recall collapsed to 0.090 then recovered; rec_floor_weight=40 too aggressive causing pred-count swing 231→1166 across epochs. gnorm 36→201 over 10 epochs. Superseded by US500_1m_r6.",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 7.5,
+    "recall_floor": 0.2,
+    "rec_floor_weight": 40.0,
+    "direction_penalty": 0.5,
+    "eps": 1e-06
+  },
+  "US500_1m_r6": {
+    "_comment": "From US500_1m_r5. R5 R1 (interrupted ep10, best_ep=5): recall floor worked but precision stuck below 50% break-even (prec_S=0.401 prec_B=0.469 at best_ep; all epochs negative PnL). Root cause: pr_weight=7.5 too low — insufficient gradient to push precision above 0.50 break-even (tp=sl=2.5). Secondary issue: rec_floor_weight=40 too aggressive — hinge=0.450 at ep8 caused violent oscillation (BUY preds swinging 231→1166 across epochs). Changes: (1) pr_weight 7.5→9.0: restore precision pressure toward r4 level; r5 proved recall CAN be maintained at ≥0.20 with floor enforced, so gradient budget now available to push precision harder. At pr_weight=9, prec=0.40: pr_component=(9×0.60+9×0.60)/2=5.4 vs weight=30, rec=0.15: hinge=30×(0.05²+0.05²)=0.15 — hinge is 2.8% of pr at mild breach, meaningful correction without domination. (2) rec_floor_weight 40→30: soften hinge to reduce pred-count oscillation; at rec=0.09 (worst r5 BUY collapse): hinge=30×(0.11²+0.10²)=0.663 vs pr=5.4 — 12% of pr, strong correction but ~75% of r5 force. (3) recall_floor 0.20 unchanged (user requirement). (4) gamma 2.0 unchanged. direction_penalty 0.5 unchanged. Target: both rec≥0.20 AND prec≥0.48 simultaneously at best epoch. Pair with model-profile US500_1m_r4. R1 (stopped at ep8, best_ep=4): val_loss=5.571 prec_S=0.412 prec_B=0.465 rec_S=0.209 rec_B=0.125 ppt=-0.104. Regressed vs r5 (best 5.571 > 4.581): higher pr_weight=9.0 inflated precision-loss component without improving PnL. SELL collapsed to 165 preds (rec_S=0.058) at ep6 — floor breach with softer rec_floor_weight=30 insufficient. gnorm 40→180 over 8 epochs still climbing. Stopped early. Superseded by US500_1m_r7.",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 9.0,
+    "recall_floor": 0.2,
+    "rec_floor_weight": 30.0,
+    "direction_penalty": 0.5,
+    "eps": 1e-06
+  },
+  "US500_1m_r7": {
+    "_comment": "From US500_1m_r6. Structural change: replaces label-based precision penalty with label-agnostic expected-profit term using precomputed per-bar barrier outcomes (sell_outcome/buy_outcome from calculate_trade_outcomes_all_candles, already in dataset). Core insight: precision penalty punishes model for predicting trades on regime-filtered FLAT bars even when those bars have positive realised outcomes; profit term rewards/penalises based on actual market truth regardless of label. Changes: (1) profit_weight 0→5.0: expected_profit = mean(p_sell×sell_out + p_buy×buy_out); -profit_weight×expected_profit added to loss. (2) pr_weight 9.0→2.0: reduced from a dominant penalty to a gentle label-quality regulariser so regime-approved SELL/BUY labels still get extra reward over equally profitable FLAT-labelled bars. (3) direction_penalty 0.5→0.0: profit term handles direction implicitly. (4) recall_floor 0.20→0.10: collapse guard only. (5) rec_floor_weight 30→15: gentler hinge with lower floor. gamma 2.0 unchanged. Pair with model-profile US500_1m_r4. R1: best_val_ep=4 val_loss=1.369 profit=15 prec_S=0.455 prec_B=0.506 rec_S=0.110 rec_B=0.185 ppt=0.020; best_ppt_ep=10 profit=21 ppt=0.041 prec_S=0.444 prec_B=0.530 rec_S=0.071 rec_B=0.138. First run with positive validation PnL, but pft stayed tiny (0.003 at best_val, ~0.000 at best_ppt) while rec_loss fired in 6/14 epochs, so the loss still underweights PnL and slightly penalises the highest-quality low-volume regime. Superseded by US500_1m_r8.",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 2.0,
+    "recall_floor": 0.1,
+    "rec_floor_weight": 15.0,
+    "direction_penalty": 0.0,
+    "profit_weight": 5.0,
+    "eps": 1e-06
+  },
+  "US500_1m_r8": {
+    "_comment": "From US500_1m_r7. R7 R1 achieved the first positive validation PnL for US500 (best_val_ep=4 profit=15, ppt=0.020; best_ppt_ep=10 profit=21, ppt=0.041) with acceptable precision (0.455/0.506 at best_val, 0.444/0.530 at best_ppt), proving the composite profit+precision design works. However the profit term remained too weak: pft was only 0.003 at best_val and ~0.000 at best_ppt versus pr≈1.07-1.10, so val-loss selection still mostly tracked precision rather than PnL per trade. Also recall_loss fired in 6/14 epochs (43%), above the >30% threshold for a floor set too high for a quality-first regime; the best-ppt epoch was penalised for rec_S=0.071 despite producing the highest trade quality. Changes: (1) profit_weight 5.0→20.0 to make realised-outcome optimisation materially visible in val_loss and pull checkpoint selection toward higher-ppt epochs. (2) recall_floor 0.10→0.08 because 0.10 was activating too often for a model whose natural high-quality operating point is slightly below 0.10 on SELL. (3) rec_floor_weight 15→10 to keep the lower floor as a gentle collapse guard rather than a competing objective. Keep pr_weight=2.0, gamma=2.0, direction_penalty=0.0 unchanged because precision is now acceptable and the label-quality bias is desirable. R1 (stopped at ep4): best_ep=2 val_loss=1.487 profit=-87 prec_S=0.410 prec_B=0.447 rec_S=0.117 rec_B=0.234 ppt=-0.089. profit_weight=20 overshot badly: pft stayed strongly positive (0.048 at best ep, 0.091 at ep1), meaning the model was still assigning probability mass to negative-outcome trades while the enlarged profit term dominated optimisation. All epochs negative PnL; worse than r7 on both val-loss-selected and ppt-selected checkpoints. Superseded by US500_1m_r9.",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 2.0,
+    "recall_floor": 0.08,
+    "rec_floor_weight": 10.0,
+    "direction_penalty": 0.0,
+    "profit_weight": 20.0,
+    "eps": 1e-06
+  },
+  "US500_1m_r9": {
+    "_comment": "From US500_1m_r8. R8 R1 showed that profit_weight=20 was severely too aggressive. The core diagnostic: pft stayed strongly positive throughout (0.091 at ep1, 0.048 at best ep2), meaning the model was consistently predicting trades on negative-outcome bars while the 20x-amplified gradient caused chaotic boundary shifts. BUY near-collapsed at ep0 (B=36, rec_B=0.005) because the large gradient immediately crushed all BUY predictions. Every epoch was negative PnL (best ppt=-0.089 vs r7 best_ppt=+0.041). Root cause: for US500 1m bars, the base rate of profitable outcomes is structurally below 50% across all 50k val bars (not just labelled ones), so a high profit_weight persistently pushes the model toward predicting FLAT. Changes: (1) profit_weight 20.0â†’7.0: conservative increment from r7's 5.0 â€” enough to strengthen the profit signal without triggering gradient chaos; the step from 5â†’20 skipped several intermediate points that may be stable. (2) pr_weight 2.0â†’3.0: precision dropped to 0.410/0.447 at r8 best epoch vs r7's 0.455/0.506; extra label-quality gradient needed to counteract profit term's push toward FLAT. (3) recall_floor 0.09â†’0.10: restore r7's working floor value; with profit_weight still present and pushing toward FLAT, 0.10 provides firmer collapse guard than 0.09. (4) rec_floor_weight 10â†’15: unchanged from r9 prior â€” appropriate strength for a 0.10 floor. Keep gamma=2.0, direction_penalty=0.0 unchanged. Pair with model-profile US500_1m_r4 (not r5 â€” regression in r8 was the loss profile, not the architecture). R1 (16 epochs, patience=10): best_ep=5 val_loss=2.022 prec_S=0.394 prec_B=0.483 ppt=-0.054 â€” all 16 epochs negative PnL. pr_weight=3.0 inflated val_loss to 2.0-2.3 (vs r7's 1.37), drowning the profit signal (pft=0.010 vs pr=1.71 at best_ep). recall_floor fired 63% of epochs (eps 6-15); gnorm escalated 16â†’81; overfitting gap +0.291 at ep5, +1.306 at ep13. Precision regressed to 0.394/0.483 vs r7's 0.455/0.506. Superseded by US500_1m_r10.",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 3.0,
+    "recall_floor": 0.1,
+    "rec_floor_weight": 15.0,
+    "direction_penalty": 0.0,
+    "profit_weight": 7.0,
+    "eps": 1e-06
+  },
+  "US500_1m_r10": {
+    "_comment": "From US500_1m_r9. R9 R1 diagnosed three compounding failures: (1) pr_weight=3.0 inflated val_loss to 2.0-2.3 (vs r7's 1.37) and reduced the profit signal to ~0.5% of total gradient (pft=0.010 vs pr=1.71 at best_ep) â€” the precision penalty completely drowned the profit term; (2) recall_floor=0.10 fired 63% of epochs (eps 6-15, above 30% threshold), creating frequent destabilising gradient conflicts as the model's natural operating recall with high pr_weight dips below 0.10; (3) precision actually regressed vs r7 (0.394/0.483 vs 0.455/0.506) despite higher pr_weight â€” inflated loss scale destabilised rather than improved precision. Changes: (1) pr_weight 3.0â†’2.0: revert to r7's working value; r9 proved 3.0 inflates the loss scale and makes training unstable without improving precision. (2) profit_weight 7.0â†’6.0: conservative one-step increment above r7's proven 5.0 â€” keeps profit signal at ~2-3% of total gradient (vs r7's ~0.2% which was too weak for val_loss selection to track ppt). (3) recall_floor 0.10â†’0.08: fired 43% in r7 and 63% in r9 (both above 30% threshold); 0.08 sits below the model's natural operating recall of 0.09-0.13, guarding against collapse without triggering every other epoch. rec_floor_weight=15.0, gamma=2.0, direction_penalty=0.0 unchanged. Pair with model-profile US500_1m_r4. R1 (3M rows + dev labels, interrupted ep7): best_val ep=2 val_loss=1.365 prec_S=0.413 prec_B=0.460 ppt=-0.104; best_ppt ep=6 ppt=-0.065 — all epochs negative PnL; BUY oscillated (ep1: B=62 rec_B=0.019, ep4: B=132 rec_B=0.053); pft settled to 0.010 by ep5; val_loss scale healthy (~r7); dataset was 3M rows (unintended) so per-epoch dynamics unrepresentative. R2 (ABORT — 1.5M rows + US500_M1_test relaxed labels): best_ep=0 val_loss=1.596 ppt=-0.077; val_loss diverged every epoch (1.596→1.833 by ep4); overfitting gap +0.986 at ep4; pft=0.116 (4.8× R1) — relaxed labels (SELL 8.1%/BUY 9.3%) flooded training with negative-outcome bars; abort ep4. Next: R3 with intended config: 1.5M rows + US500_1m_dev labels. R3 (1.5M rows + US500_1m_dev labels, intended config, stopped ep9): best_val ep=4 val_loss=1.415 prec_S=0.387 prec_B=0.557 ppt=-0.077; best_ppt ep=3 ppt=-0.063; all 10 epochs negative PnL. Key finding: SELL precision stuck at 0.335-0.425 (below 0.40 floor every epoch) while BUY precision reached 0.557 at ep4 (BUY profit=+23); profit_weight=6.0 appears to asymmetrically over-reward BUY vs SELL vs r7 which had prec_S=0.455 with profit_weight=5.0. Val_loss bounced ep5 (1.535) and never recovered to ep4 best (1.415); overfitting gap grew +0.172 (ep4) to +0.654 (ep9). Superseded by US500_1m_r11.",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 2.0,
+    "recall_floor": 0.08,
+    "rec_floor_weight": 15.0,
+    "direction_penalty": 0.0,
+    "profit_weight": 6.0,
+    "eps": 1e-06
+  },
+  "XAUUSD_1m_dev": {
     "_comment": "XAUUSD 1m dev profile. Higher gamma and pr_weight; moderate recall floor.",
-    "gamma":             2.5,
-    "trade_classes":     [0, 2],
-    "pr_weight":         12.0,
-    "recall_floor":      0.20,
-    "rec_floor_weight":  60.0,
+    "gamma": 2.5,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 12.0,
+    "recall_floor": 0.2,
+    "rec_floor_weight": 60.0,
     "direction_penalty": 1.5,
-    "eps":               1e-6
+    "eps": 1e-06
   },
-
   "EURUSD_1m_dev": {
     "_comment": "EURUSD 1m dev profile. Tuned over R6-R10: lower gamma, reduced pr_weight to prevent BUY collapse, early recall hinge, minimal direction penalty. R10: best_ep=6 val_loss=4.884 prec_S=0.398 prec_B=0.370 ppt=0.053 (best_val_ep) / ppt=0.175 (best_pnl_ep=10) — BUY collapsed 662→33 preds at ep6→ep7; recall hinge had zero force at ep6 (rec_buy=0.202 > floor=0.12).",
-    "gamma":             2.0,
-    "trade_classes":     [0, 2],
-    "pr_weight":         7.0,
-    "recall_floor":      0.12,
-    "rec_floor_weight":  25.0,
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 7.0,
+    "recall_floor": 0.12,
+    "rec_floor_weight": 25.0,
     "direction_penalty": 0.5,
-    "eps":               1e-6,
-    "label_smoothing":   0.05
+    "eps": 1e-06,
+    "label_smoothing": 0.05
   },
-
   "EURUSD_1m_r11": {
     "_comment": "From EURUSD_1m_dev. Reduced pr_weight 7.0→5.5: precision_loss dominated at 4.5–5.5 vs focal_ce ~0.5, driving BUY oscillation. Raised recall_floor 0.12→0.16: at ep6 rec_buy=0.202 so hinge=0 — collapse was unresisted; 0.16 provides 11× stronger counter-gradient at onset (rec=0.10). Raised rec_floor_weight 25→30: maintains hinge/precision ratio at 3.6× (20/5.5≈3.6 was also considered; 30/5.5≈5.5 gives stronger hinge to compensate lower pr_weight). Paired with CLI: lr=2.0e-5 wd=7.0e-3 patience=12. R11 (b12e2f4, n_rows=1.5M): best_ep=11 val_loss=3.789 ppt=0.095 | best_pnl_ep=16 pnl=128 ppt=0.121 — recall_floor=0.16 fired in ~45% of epochs (eps 1,5,6,12-14,16-18), creating pred oscillation; pr_loss=3.513/val=3.789=92.7% at best ep → precision ~35%; pr_weight=5.5 too low.",
-    "gamma":             2.0,
-    "trade_classes":     [0, 2],
-    "pr_weight":         5.5,
-    "recall_floor":      0.16,
-    "rec_floor_weight":  30.0,
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 5.5,
+    "recall_floor": 0.16,
+    "rec_floor_weight": 30.0,
     "direction_penalty": 0.5,
-    "eps":               1e-6,
-    "label_smoothing":   0.05
+    "eps": 1e-06,
+    "label_smoothing": 0.05
   },
-
   "EURUSD_1m_r12": {
     "_comment": "From EURUSD_1m_r11 (b12e2f4). Raised pr_weight 5.5→7.5: pr_loss=92.7% of val_loss at best_ep; precision estimated ~35% — need stronger pressure. Lowered recall_floor 0.16→0.10: floor fired in ~45% of R11 epochs, driving pred oscillation; 0.10 acts as collapse guard only. Lowered rec_floor_weight 30→20: proportional to floor reduction; hinge/precision ratio 20/7.5=2.67× (vs R11 5.45×, dev 3.57×). Architecture unchanged (model_profile=EURUSD_1m_r11).",
-    "gamma":             2.0,
-    "trade_classes":     [0, 2],
-    "pr_weight":         7.5,
-    "recall_floor":      0.10,
-    "rec_floor_weight":  20.0,
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 7.5,
+    "recall_floor": 0.1,
+    "rec_floor_weight": 20.0,
     "direction_penalty": 0.5,
-    "eps":               1e-6,
-    "label_smoothing":   0.05
+    "eps": 1e-06,
+    "label_smoothing": 0.05
   },
-
   "EURUSD_1m_r13": {
     "_comment": "From EURUSD_1m_r12. Adds precision_power=2.0 (quadratic, Change 3): stronger gradient when precision is far below target, gentler as it improves. pr_weight raised to 11.0 (from 7.5): quadratic at prec=0.36 gives same gradient as linear at ~pr_weight=7.0, so raise to 11.0 to maintain ~40% stronger push. Adds pr_weight_sell/buy (Change 4): initially symmetric at 11.0 each; tune asymmetrically after observing R13 direction split. recall_floor stays at 0.10 (collapse guard only). Use with model_profile=EURUSD_1m_r13 (inter-layer LN arch). R13: best_ep=19 val_loss=4.444 prec_S=0.413 prec_B=0.427 pnl=68 (best_val) / best_pnl=109 ep15 — precision target achieved at 41-43% but pred volume critically low (104 SELL + 110 BUY at best_val_ep; 219+164 at best_pnl_ep). Model over-conservative: precision_power=2.0 with pr_weight=11.0 creates excessive quadratic gradient penalising borderline predictions. gnorm escalated 19→194 over 20 eps. Superseded by EURUSD_1m_r14.",
-    "gamma":             2.0,
-    "trade_classes":     [0, 2],
-    "pr_weight":         11.0,
-    "pr_weight_sell":    11.0,
-    "pr_weight_buy":     11.0,
-    "precision_power":   2.0,
-    "recall_floor":      0.10,
-    "rec_floor_weight":  20.0,
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 11.0,
+    "pr_weight_sell": 11.0,
+    "pr_weight_buy": 11.0,
+    "precision_power": 2.0,
+    "recall_floor": 0.1,
+    "rec_floor_weight": 20.0,
     "direction_penalty": 0.5,
-    "eps":               1e-6,
-    "label_smoothing":   0.05
+    "eps": 1e-06,
+    "label_smoothing": 0.05
   },
-
   "EURUSD_1m_r14": {
-    "_comment": "From EURUSD_1m_r13. Precision target achieved (41-43%) but pred volume critically low (104+110 at best_val_ep). Root cause: precision_power=2.0 + pr_weight=11.0 excessively penalise borderline predictions → model only predicts when extremely confident. gnorm 19→194 over 20 eps. Changes: (1) pr_weight 11.0→8.5 — precision at target; relax to allow borderline predictions. pr_weight_sell/buy lowered to 8.5 symmetrically. (2) precision_power 2.0→1.5 — reduce quadratic gradient to soften avoidance of uncertain preds. (3) recall_floor 0.10→0.13 — operating recall in R13 was ~4%; raise floor to create a larger hinge at the actual operating point. (4) rec_floor_weight 20→45 — at recall=0.04, hinge fires at (0.13-0.04)*45=4.05 per direction, exceeding precision_loss ~3.0 to consistently push recall up. Expects 250-500 trade preds per 50k bars; precision may ease to 38-42%. Use with model_profile=EURUSD_1m_r14.",
-    "gamma":             2.0,
-    "trade_classes":     [0, 2],
-    "pr_weight":         8.5,
-    "pr_weight_sell":    8.5,
-    "pr_weight_buy":     8.5,
-    "precision_power":   1.5,
-    "recall_floor":      0.13,
-    "rec_floor_weight":  45.0,
+    "_comment": "From EURUSD_1m_r13. Precision target achieved (41-43%) but pred volume critically low (104+110 at best_val_ep). Root cause: precision_power=2.0 + pr_weight=11.0 excessively penalise borderline predictions → model only predicts when extremely confident. gnorm 19→194 over 20 eps. Changes: (1) pr_weight 11.0→8.5 — precision at target; relax to allow borderline predictions. pr_weight_sell/buy lowered to 8.5 symmetrically. (2) precision_power 2.0→1.5 — reduce quadratic gradient to soften avoidance of uncertain preds. (3) recall_floor 0.10→0.13 — operating recall in R13 was ~4%; raise floor to create a larger hinge at the actual operating point. (4) rec_floor_weight 20→45 — at recall=0.04, hinge fires at (0.13-0.04)*45=4.05 per direction, exceeding precision_loss ~3.0 to consistently push recall up. Expects 250-500 trade preds per 50k bars; precision may ease to 38-42%. Use with model_profile=EURUSD_1m_r14. R14: best_ep=8 val_loss=4.6172 prec_S=0.353 prec_B=0.428 ppt=-0.19 — all epochs negative PnL; prec_S never cleared 0.40 floor or 43.5% break-even. recall_floor=0.13 fired >50% of epochs, gnorm escalated 8.6→167. BUY recall collapsed to 0.029 at ep15. Superseded by EURUSD_M1_prod_r15. R14: best_ep=8 val_loss=4.6172 prec_S=0.353 prec_B=0.428 ppt=-0.19 — all epochs negative PnL; prec_S never cleared 0.40 floor or 43.5% break-even. recall_floor=0.13 fired >50% of epochs, gnorm escalated 8.6->167. BUY recall collapsed to 0.029 at ep15. Superseded by EURUSD_M1_prod_r15.",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 8.5,
+    "pr_weight_sell": 8.5,
+    "pr_weight_buy": 8.5,
+    "precision_power": 1.5,
+    "recall_floor": 0.13,
+    "rec_floor_weight": 45.0,
     "direction_penalty": 0.5,
-    "eps":               1e-6,
-    "label_smoothing":   0.05
+    "eps": 1e-06,
+    "label_smoothing": 0.05
   },
-
+  "EURUSD_M1_prod_r15": {
+    "_comment": "From EURUSD_1m_r14. New label profile EURUSD_M1_prod uses tp=2.5/sl=2.5 (symmetric) -> break-even precision raised to 50% (was 43.5%). pr_weight 8.5->10.0: prec_S=0.353 at r14 best_ep=8; need to push both directions toward 50% break-even. pr_weight_sell/buy 8.5->10.0 symmetrically. recall_floor 0.13->0.10: floor fired in >50% of r14 epochs (eps 4,9,10,12,13,14,15,16), destabilising gnorm and oscillating pred counts; 0.10 acts as collapse guard only. rec_floor_weight 45->65: lower floor fires less often; stronger weight (65) gives decisive correction on the rare occasion it fires. All other params unchanged from r14. R15: best_ep=19 val_loss=4.3688 prec_S=0.439 prec_B=0.544 ppt=+0.003 (best_pnl_ep24 profit=+7 ppt=+0.017) — first positive PnL run. BUY above 50% break-even consistently (0.513-0.544); SELL drag: prec_S never crossed 0.50 (0.456 at best_pnl_ep). rec_S=0.067 at best_val_ep (below floor, hinge firing). gnorm stabilised 229-241, no inf. Overfitting gap +1.40 at early stop ep26. Superseded by EURUSD_M1_prod_r16.",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 10.0,
+    "pr_weight_sell": 10.0,
+    "pr_weight_buy": 10.0,
+    "precision_power": 1.5,
+    "recall_floor": 0.1,
+    "rec_floor_weight": 65.0,
+    "direction_penalty": 0.5,
+    "eps": 1e-06,
+    "label_smoothing": 0.05
+  },
   "prod": {
     "_comment": "Production default. High precision bias with strong recall floor to prevent class collapse.",
-    "gamma":             2.5,
-    "trade_classes":     [0, 2],
-    "pr_weight":         12.0,
-    "recall_floor":      0.20,
-    "rec_floor_weight":  60.0,
+    "gamma": 2.5,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 12.0,
+    "recall_floor": 0.2,
+    "rec_floor_weight": 60.0,
     "direction_penalty": 1.5,
-    "eps":               1e-6
+    "eps": 1e-06
   },
-
   "balanced": {
     "_comment": "Softer precision lever. Useful for instruments with sparse labels.",
-    "gamma":             2.0,
-    "trade_classes":     [0, 2],
-    "pr_weight":         6.0,
-    "recall_floor":      0.15,
-    "rec_floor_weight":  30.0,
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 6.0,
+    "recall_floor": 0.15,
+    "rec_floor_weight": 30.0,
     "direction_penalty": 1.2,
-    "eps":               1e-6
+    "eps": 1e-06
   },
-
   "high_precision": {
     "_comment": "Maximum precision pressure. Use when signal quality matters more than coverage.",
-    "gamma":             3.0,
-    "trade_classes":     [0, 2],
-    "pr_weight":         20.0,
-    "recall_floor":      0.10,
-    "rec_floor_weight":  80.0,
+    "gamma": 3.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 20.0,
+    "recall_floor": 0.1,
+    "rec_floor_weight": 80.0,
     "direction_penalty": 2.0,
-    "eps":               1e-6
+    "eps": 1e-06
   },
-
   "high_recall": {
     "_comment": "Lower precision pressure. Catches more entries at the cost of precision.",
-    "gamma":             2.0,
-    "trade_classes":     [0, 2],
-    "pr_weight":         5.0,
-    "recall_floor":      0.30,
-    "rec_floor_weight":  40.0,
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 5.0,
+    "recall_floor": 0.3,
+    "rec_floor_weight": 40.0,
     "direction_penalty": 1.0,
-    "eps":               1e-6
+    "eps": 1e-06
+  },
+  "EURUSD_M1_prod_r16": {
+    "_comment": "From EURUSD_M1_prod_r15. Core issue: SELL drag — prec_S=0.456 at best_pnl_ep never cleared 0.50 break-even; BUY was profitable (prec_B=0.513-0.544) while SELL consistently lost. (1) pr_weight_sell 10.0->12.0: asymmetric precision push to drive prec_S toward 0.50; SELL precision trailed BUY by ~0.07 every epoch. (2) pr_weight_buy 10.0->9.0: BUY already above target, ease to maintain BUY volume and reduce gradient magnitude. (3) pr_weight 10.0->10.5: harmonic mean of new sell/buy weights as symmetric fallback. (4) recall_floor 0.10->0.12: r15 late-epoch SELL recall naturally landed at mean=0.084 median=0.081; with pr_weight_sell=12.0, SELL recall is expected to drop further to ~0.04-0.06. Floor raised to 0.12 to provide a stronger collapse guard — same firing frequency as 0.10 (model recall already below both), but 2.3x more corrective force. NOT raised to 0.15 (would be 20-27%% of total loss, likely destabilising) or 0.20 (56%%, would dominate). (5) rec_floor_weight 65->50: compensates for higher floor magnitude; keeps rec component at ~9-10%% of total loss (vs 4%% with floor=0.10/w=65 at r15 operating recall), preventing the recall hinge from overwhelming the precision signal. R16: best_ep=11 val_loss=5.0293 prec_S=0.441 prec_B=0.444 ppt=-0.076 (best_pnl_ep17 profit=-42 ppt=-0.070) -- ALL EPOCHS NEGATIVE PnL. Key failures: (a) pr_weight_sell=12.0 drove rec_S below floor=0.12 in 8/19 epochs (42%), creating SELL precision/recall feedback loop -- model oscillated between high-precision/low-recall and low-precision/high-recall for SELL without converging; (b) BUY precision collapsed from r15 0.51-0.54 to 0.39-0.45 -- reducing pr_weight_buy 10->9 combined with asymmetric gradient competition caused BUY to lose quality; (c) val_loss regressed vs r15 (5.03 vs 4.37) -- higher precision pressure made loss harder to minimize without metric gains; gnorm escalated 30->235 identically to r15 pattern (LR reduction had zero effect). Overfitting gap improved 1.40->1.11 (wd increase working). Superseded by EURUSD_M1_prod_r17.",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 10.5,
+    "pr_weight_sell": 12.0,
+    "pr_weight_buy": 9.0,
+    "precision_power": 1.5,
+    "recall_floor": 0.12,
+    "rec_floor_weight": 50.0,
+    "direction_penalty": 0.5,
+    "eps": 1e-06,
+    "label_smoothing": 0.05
+  },
+  "EURUSD_M1_prod_r17": {
+    "_comment": "From EURUSD_M1_prod_r16. Root cause of r16 failure: (a) pr_weight_sell=12.0 + recall_floor=0.12 created irresolvable SELL precision/recall feedback loop -- floor fired 42% of SELL epochs in convergence phase, permanently opposing the precision gradient; SELL precision stagnated at 0.441 (vs 0.439 r15 -- zero improvement despite 20% more SELL pressure). (b) pr_weight_buy=9.0 collapsed BUY precision 0.51-0.54 (r15) -> 0.39-0.44 (r16). Changes: (1) pr_weight_sell 12.0->11.0: retain modest SELL bias (1.0 unit over BUY) but reduce absolute magnitude; at 12.0, pr pressure drove rec_S below 0.12 floor 42% of time; at 11.0, model should operate at slightly higher recall, reducing floor-firing frequency. (2) pr_weight_buy 9.0->10.0: restore r15 level where BUY was reliably >50% break-even (prec_B 0.513-0.544); reducing buy weight by 1.0 in r16 collapsed BUY precision catastrophically. (3) recall_floor 0.12->0.10: restore r15 level; 0.12 fires in 42% of SELL epochs once model converges (ep10-18), creating constant opposing force to precision optimization; 0.10 acts as pure collapse guard and should fire rarely with pr_weight_sell=11.0. (4) rec_floor_weight 50->65: restore r15 level; appropriate decisive correction for 0.10 floor (fires rarely but powerfully). Expected: BUY precision restored to 0.50+; SELL precision to improve modestly toward 0.46-0.48; positive PnL if both near/above break-even. | R17: best_ep=10 val_loss=5.1536 prec_S=0.392 prec_B=0.461 ppt=-0.127 -- ALL EPOCHS NEGATIVE PnL. SELL precision ceiling confirmed at ~0.40 for 3rd consecutive run (r15/r16/r17 best_ep prec_S: 0.439/0.441/0.392) despite pr_weight_sell escalating 10->12->11: covariance of pw_sell vs prec_S is near-zero; more SELL pressure yields no precision gain. BUY trending toward 0.50+ in late epochs (ep17 prec_B=0.507 with 134 preds) confirming headroom exists. rec_floor fired 5/18 epochs=28% (borderline, acceptable). gnorm 29->210 (improving: r15=241, r16=235, r17=210 with wd trend 0.009->0.011->0.012). Overfitting gap +0.98 at ep17 (r15=+1.40, r16=+1.11 -- trend continues). SELL ceiling is a data/label structural limit; strategy shift in r18: invert asymmetry (pr_weight_sell->9.0, pr_weight_buy->11.0) to let BUY carry PnL.",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 10.5,
+    "pr_weight_sell": 11.0,
+    "pr_weight_buy": 10.0,
+    "precision_power": 1.5,
+    "recall_floor": 0.1,
+    "rec_floor_weight": 65.0,
+    "direction_penalty": 0.5,
+    "eps": 1e-06,
+    "label_smoothing": 0.05
+  },
+  "EURUSD_M1_prod_r18": {
+    "_comment": "From EURUSD_M1_prod_r17. Strategic pivot based on 3-run evidence: SELL precision is structurally capped at ~0.40-0.44 (below 0.50 break-even for tp=sl=2.5). Increasing pr_weight_sell (10->12->11 across r15/r16/r17) produced no improvement in prec_S (0.439/0.441/0.392 at best_ep -- near-zero covariance). BUY has clear headroom: prec_B trended 0.461->0.507 across r17 epochs and r15 reliably held 0.513-0.544. Changes: (1) pr_weight_sell 11.0->9.0: accept SELL at its natural precision ceiling; lower SELL pressure reduces SELL volume so fewer low-precision trades create drag. (2) pr_weight_buy 10.0->11.0: BUY has demonstrated precision headroom; push toward 0.52+. (3) pr_weight 10.5->10.0: arithmetic mean of new asymmetric weights (fallback). All other params unchanged -- recall_floor=0.10 and rec_floor_weight=65.0 working correctly (fired 5/18 = 28% of r17 epochs, below 30% alert threshold). Expected: fewer SELL preds at ~0.40-0.42, more selective BUY at 0.50-0.55+; positive PnL target if BUY alone compensates SELL drag.",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 10.0,
+    "pr_weight_sell": 9.0,
+    "pr_weight_buy": 11.0,
+    "precision_power": 1.5,
+    "recall_floor": 0.1,
+    "rec_floor_weight": 65.0,
+    "direction_penalty": 0.5,
+    "eps": 1e-06,
+    "label_smoothing": 0.05
+  },
+  "US500_1m_r11": {
+    "_comment": "From US500_1m_r10. R10 R3 confirmed profit_weight=6.0 degrades SELL precision: prec_S was 0.335-0.425 across all 10 epochs (best 0.387 at ep4) vs r7 prec_S=0.455 with profit_weight=5.0; the +1.0 step asymmetrically over-rewards BUY-direction signals (prec_B reached 0.557 at ep4, better than r7) but suppresses SELL quality. Single change: profit_weight 6.0->5.0 to revert to r7 proven value. recall_floor stays at 0.08 (not restoring r7 0.10 which fired 43% of epochs); this is effectively r7 + improved recall_floor=0.08. pr_weight=2.0, rec_floor_weight=15.0, gamma=2.0, direction_penalty=0.0 unchanged. Expected: prec_S recovers toward 0.45+, ppt target >= r7 best_ppt +0.041. Pair with model-profile US500_1m_r4. R1 (1.5M rows + US500_1m_dev, running at ep10, best_ep=2): best_val ep=2 val_loss=1.383 prec_S=0.411 prec_B=0.444 ppt=-0.104; best_ppt ep=6 ppt=-0.065 prec_S=0.441 prec_B=0.464. All epochs negative PnL despite profit_weight=5.0 matching r7 proven value. Root cause: recall_floor=0.08 allows SELL direction to collapse to rec~0.027-0.038 before the hinge fires (floor=0.10 would fire 9x stronger at rec=0.07, preventing deep collapse). SELL collapse observed: ep7 S=133 rec~0.038, ep8 S=110 rec~0.027 vs r7 floor=0.10 which fired 6/14 epochs as stabilising training constraint. Superseded by US500_1m_r12.",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 2.0,
+    "recall_floor": 0.08,
+    "rec_floor_weight": 15.0,
+    "direction_penalty": 0.0,
+    "profit_weight": 5.0,
+    "eps": 1e-06
+  },
+  "US500_1m_r12": {
+    "_comment": "From US500_1m_r11. Single change: recall_floor 0.08->0.10 to restore r7 proven value. r11 analysis: floor=0.08 allows SELL recall to collapse to 0.027-0.038 at late epochs (eps 7-10) before hinge provides sufficient correction. At rec=0.07, floor=0.10 provides 9x stronger hinge correction (0.0135 vs 0.0015) than floor=0.08, firing earlier in the collapse trajectory and preventing the deep SELL suppression that trapped both r10 and r11. r7 fired floor 6/14 epochs (43%) at 0.10 and achieved ppt=+0.041; this makes r12 identical to r7 config (profit_weight=5.0 pr_weight=2.0 recall_floor=0.10 rec_floor_weight=15.0) to confirm reproducibility. Pair with model-profile US500_1m_r4. R1 (1.5M + dev labels): 16 epochs (0-15), early-stop patience=10 from best ep5. best_val ep=5 val_loss=1.396 prec_S=0.406 prec_B=0.462 rec_S=0.239 rec_B=0.294 profit=-90 ppt=-0.062. All 16 epochs negative PnL (best ppt ep5=-0.062). Recall floor fired 8/16 epochs (50%) — higher rate than r7 43% — but insufficient: SELL recall oscillated 0.039-0.439 with ceiling at rec_S=0.252 (ep4). SELL precision ceiling 0.409 across all epochs. CRITICAL FINDING: r12 is identical to r7 config (profit_weight=5.0 recall_floor=0.10) but all-negative on current val set (val_start=2026-03-06). r7 non-reproducibility CONFIRMED — r7 positive PnL was partially attributable to earlier val period. Val data has drifted forward (now March-May 2026, bullish regime); current SELL label TP-rate in this period appears structurally lower, creating a SELL precision ceiling ~0.41 across all LSTM runs. gnorm trajectory 9.7->55.9 (same as r10/r11) — LSTM gradient instability pattern unchanged. Superseded by US500_1m_r13 (profit_weight 5.0->4.0, reduce profit penalty for bullish val regime).",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 2.0,
+    "recall_floor": 0.1,
+    "rec_floor_weight": 15.0,
+    "direction_penalty": 0.0,
+    "profit_weight": 5.0,
+    "eps": 1e-06
+  },
+  "US500_1m_r13": {
+    "_comment": "From US500_1m_r12. Single change: profit_weight 5.0->4.0. Motivation: r12 confirmed r7 non-reproducibility — SELL precision ceiling ~0.41 persists across all LSTM runs on current val period (Mar-May 2026 bullish regime). Reducing profit_weight reduces the asymmetric gradient suppression of SELL-direction predictions: higher profit_weight over-penalises predictions on bars where TP does not hit, disproportionately suppressing SELL in a bullish val window. profit_weight=4.0 reduces this bias, allowing the model to explore SELL signals with less penalty while the recall_floor=0.10 stabiliser keeps SELL from collapsing. Note: TCN architecture (model-profile TCN/US500_1m_r1 + this loss profile) is the recommended parallel experiment — LSTM has produced 1/7 positive PnL runs; TCN avoids BPTT gradient instability (gnorm 10->55 every LSTM run). Pair with model-profile US500_1m_r4. R3 (TCN/US500_1m_r1 + this profile, 3M rows, ep0-12, patience=10): best_ep=2 val_loss=1.4865 — ALL epochs negative PnL; ppt range -0.115 to -0.199 (ppt=-0.127 at best_ep). Train overfit from ep3 (gap +0.021), widened to +0.612 by ep12. gnorm 5.8->34.2 (clean, no inf). prec_S max=0.428 (ep4), prec_B max=0.489 (ep5) — stuck below 0.45 target. Recall floor violated ep5 (rec_B=0.068) ep8 (rec_S=0.048; rec_B=0.069). 11/13 epochs had at least one direction below rec=0.20 (new user requirement). Regression vs R2 (profit_weight=5.0): only change was profit_weight 5.0->4.0 which shifted gradient dynamics unfavourably. Superseded by US500_1m_r14 (pr_weight->9.0, recall_floor->0.18, rec_floor_weight->25.0, profit_weight reverted to 5.0).",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 2.0,
+    "recall_floor": 0.1,
+    "rec_floor_weight": 15.0,
+    "direction_penalty": 0.0,
+    "profit_weight": 4.0,
+    "eps": 1e-06
+  },
+  "US500_1m_r14": {
+    "_comment": "From US500_1m_r13. Four targeted changes driven by R3 failure diagnosis: (1) pr_weight 2.0->9.0: PRIMARY FIX — precision stuck at 0.40-0.43 across all epochs despite pr dominating at 82.5% of val_loss; gradient force at pr_weight=2.0 is ~4.5x too weak for the precision objective; 9.0 is centre of healthy range (8-11). (2) recall_floor 0.10->0.18: user requires recall>=0.20 going forward; 11/13 R3 epochs violated rec<0.20 for at least one direction; floor at 0.18 means hinge fires before dropping below target, pushing operating recall to >=0.20. (3) rec_floor_weight 15.0->25.0: proportional scaling for higher floor; when rec=0.12 (0.06 below floor=0.18), hinge=25x0.06^2=0.090 — maintains comparable corrective force per unit of violation relative to old params. (4) profit_weight 4.0->5.0: REVERT to R2 winning value; R2 (profit_weight=5.0) achieved breakthrough positive PnL at ep6 and ep13 while R3 (4.0) failed all epochs; the only structural difference between runs. Pair with model-profile TCN/US500_1m_r1 (architecture unchanged — stable in R2). Expected: prec_S>=0.45, prec_B>=0.45, rec>=0.20 both directions, positive PnL at >=2 epochs. R1 FINAL (3M rows, early-stop ep16, patience=8): best_ep=8 val_loss=5.663 prec_S=0.414 prec_B=0.456 gated_ppt=0.161 gated_pnl=50. Hinge fired 13/17 epochs (76%) â€” floor=0.18 at model's natural operating recall. Non-hinge avg gated_pnl=67, hinge-firing avg=29 (âˆ’57%). Overfitting: gap +0.07(ep8)â†’+2.53(ep16). gnorm 28.9â†’163.5, never plateaued (+567%). No improvement after ep8. Model pack saved. Superseded by US500_1m_r15 (recall_floorâ†’0.10, rec_floor_weightâ†’15.0, pr_weightâ†’10.0).",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 9.0,
+    "recall_floor": 0.18,
+    "rec_floor_weight": 25.0,
+    "direction_penalty": 0.0,
+    "profit_weight": 5.0,
+    "eps": 1e-06
+  },
+  "US500_1m_r15": {
+    "_comment": "From US500_1m_r14. THREE CHANGES targeting gated PnL improvement. (1) recall_floor 0.18->0.10: QUANTIFIED FIX â€” hinge was firing at 7-10.5% of val_loss per firing epoch (25x(0.18-0.034)^2=0.533 at ep4-BUY, 25x(0.18-0.027)^2=0.585 at ep11-BUY), causing violent recall overcorrection and oscillation. Gated PnL averaged 67 on non-firing epochs vs 29 on firing epochs (56% suppression). Floor at 0.10 repositions the hinge as a true collapse guard: fires only when recall drops below 0.10. (2) rec_floor_weight 25.0->15.0: proportional reduction for lower floor; at the most severe violation seen (rec=0.027, 0.073 below new floor of 0.10), hinge=15x0.073^2=0.080 = 1.4% of val_loss vs the previous 10.5%. Prevents collapse without triggering oscillation. (3) pr_weight 9.0->10.0: SELL precision plateaued at 0.414 at best epoch (ep8) vs 0.45 target; modest increase to push SELL above target. BUY already at 0.456. Expected: gated_ppt>0.20 by best epoch, gated_pnl>70, monotonic precision improvement, no recall oscillation. Pair with model-profile TCN/US500_1m_r2. | R_LSTM_r4 (1.5M rows, early-stop ep8, patience=7): best_ep=8 val_loss=5.57 prec_S=0.448 prec_B=0.577 gated_ppt=0.102 gated_pnl=15 â€” SELL direction negative gated_pnl at best ep (âˆ’3). ep9 (not saved): gated_pnl=53 ppt=0.244 â€” checkpoint misalignment. profit_weight=5.0 was ineffective (pftâ‰ˆ0.000 every epoch). gnorm 58â†’245 monotonic, no plateau. Severe overfitting (gap +3.10 at ep15). Superseded by r16 for LSTM runs. | R_TCN_r2 (3M rows, early-stop ep9, patience=7): best_ep=7 val_loss=6.21 prec_S=0.274 prec_B=0.667 gated_ppt=-0.023 gated_pnl=-1 -- SELL direction collapse at best_val ep (prec_S=0.274). best_gpnl ep0 (prec_S=0.316 B=0.273, sub-threshold). Volume collapse: 1688 preds ep0 -> 108 ep7 (-93%). Corr(vol,gpnl)=+0.932. pr_weight=10 too aggressive for TCN architecture. Superseded by r16 (pr_weight->7.5).",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 10.0,
+    "recall_floor": 0.1,
+    "rec_floor_weight": 15.0,
+    "direction_penalty": 0.0,
+    "profit_weight": 5.0,
+    "eps": 1e-06
+  },
+  "US500_1m_r16": {
+    "_comment": "From US500_1m_r15. ONE CHANGE: pr_weight 10.0->7.5. Quantitative rationale: across 4 recent US500 runs, median Corr(gated_vol, gated_pnl)=+0.924 vs median Corr(avg_prec, gated_pnl)=-0.596. The current pr_weight=10 drives signal count from ~1500 (ep0) to ~100 (ep7-9), a 93% collapse, while gppt only improves from 0.11 to 0.16 (+45%). The 20x volume loss dominates the 1.45x quality improvement by ~14:1 in gated_pnl terms. Target with pr_weight=7.5: maintain 400-800 preds/epoch through ep10+ (vs 80-400 with pr_weight=10), achieving the transitional mid-zone prec=0.40-0.45 for more epochs. Still above the 8.0 healthy floor -- provides sufficient precision gradient without collapse. Pair with TCN/US500_1m_r2 and --n-rows 3000000 --epochs 30. | R_TCN_r2 (3M rows, interrupted ep14/30): best_val_ep=12 val_loss=4.499 prec_S=0.485 prec_B=0.495 gated_pnl=24 gated_ppt=0.197 gated=[S:83 B:39]=122 trades. best_gated_ep=8 gated_pnl=41 prec_S=0.575 prec_B=0.396 ppt=0.203 gated=[S:15 B:187]=202 trades. IMPROVEMENT vs r15: gated trades 43->202 at best_gated ep, gated_pnl -1->+41. pr_weight=7.5 validated. gnorm climbed 21.6->138.6 (no plateau), gap -0.78->+1.96 by ep14 -- still overfitting. rec loss fired 12/15 epochs (still ~80% fire rate -- floor 0.10 miscalibrated). Superseded by r17 (recall_floor->0.05).",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 7.5,
+    "recall_floor": 0.1,
+    "rec_floor_weight": 15.0,
+    "direction_penalty": 0.0,
+    "profit_weight": 5.0,
+    "eps": 1e-06
+  },
+  "US500_1m_r17": {
+    "_comment": "From US500_1m_r16. ONE CHANGE: recall_floor 0.10->0.05. Quantitative rationale: hinge operates on SOFT recall (mean P(SELL/BUY) on true label bars), not hard recall (argmax-based). In FLAT-dominated outputs (~95% FLAT), soft recall sits structurally at 0.05-0.10 even when hard recall is healthy (median 0.36-0.40). Floor at 0.10 fired 12/15 epochs in r16 (80% fire rate) -- continuous training signal, not a collapse guard. Hard recall only fell below 0.10 in cold-start epochs 0-3. Floor at 0.05 targets true probability collapse only; at the worst r16 violation (soft_rec~0.045, 0.005 below new floor), hinge=15x0.005^2=0.000375 = negligible. All other params unchanged from r16. Pair with TCN/US500_1m_r2. | R_TCN_r2 (3M rows, early-stop ep18/30): best_val_ep=11 val_loss=4.346 prec_S=0.423 prec_B=0.613 gated_pnl=23 ppt=0.247 gated=93 trades. best_gated_ep=17 gated_pnl=32 ppt=0.230 prec_S=0.437 prec_B=0.456 gated=139 trades. FIRST CLEAN COMPLETION via early stopping. recall_floor=0.05 validated: rec_loss>0.01 in 5/19 epochs (26%% < 30%% threshold). prec_B=0.613 at best_val on only 31 B-preds -- asymmetric, large headroom to reduce pr_weight. Best_val ep (93 gated) below 200 target; best vol epochs ep5/ep9 (190/180 gated, pnl=29) not selected by val_loss. gnorm 29->149 still climbing, gap +1.03 at best_ep (+2.45 by ep18). Superseded by r18 (pr_weight->6.0 to recover volume while maintaining prec>=0.38).",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 7.5,
+    "recall_floor": 0.05,
+    "rec_floor_weight": 15.0,
+    "direction_penalty": 0.0,
+    "profit_weight": 5.0,
+    "eps": 1e-06
+  },
+  "US500_1m_r18": {
+    "_comment": "From US500_1m_r17. ONE CHANGE: pr_weight 7.5->6.0. Rationale: prec_B=0.613 at best_val_ep=11 (only 31 B-preds) shows large headroom above 0.38 floor. prec_S=0.423 at same epoch also above target. Corr(gated_vol,gated_pnl)=+0.924 means recovering volume outweighs precision loss. Healthy deployment epochs ep5/ep9 had 190/180 gated trades and pnl=29 each, but were not selected by val_loss (still declining). Lower pr_weight should allow more epochs to maintain volume>400 preds while keeping prec_S/B>=0.38. If precision falls below 0.38, next step is pr_weight=6.5. All other params unchanged from r17. Pair with TCN/US500_1m_r2. | R_TCN_r2 (3M rows, early-stop ep28/30): best_val_ep=21 val_loss=3.604 prec_S=0.535 prec_B=0.455 gated_pnl=37 ppt=0.268 gated=138. best_gated_ep=18 gated_pnl=48 ppt=0.281 prec_S=0.463 prec_B=0.459 gated=171. pr_weight=6.0 VALIDATED: prec_S/B>=0.38 from ep7 onwards; recall_floor=0.05 validated (rec>0.01 in 4/29=14% of epochs). Volume fully recovered vs r17 (31->187 B-preds at best_val). gated_pnl +50% vs r17 (48 vs 32). gnorm plateaued at 127-133 eps21-28. Train/val gap +1.82 at best_val, +2.20 peak -- persistent overfitting. Superseded by r19 (loss unchanged, model->TCN/US500_1m_r3 wd->0.012 dropout_out->0.55).",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 6.0,
+    "recall_floor": 0.05,
+    "rec_floor_weight": 15.0,
+    "direction_penalty": 0.0,
+    "profit_weight": 5.0,
+    "eps": 1e-06
+  },
+  "US500_1m_r19": {
+    "_comment": "From US500_1m_r18. Loss params UNCHANGED from r18 (pr_weight=6.0 validated; recall_floor=0.05 validated at 14% fire rate). Paired with NEW model profile TCN/US500_1m_r3 (wd 0.008->0.012, dropout_out 0.50->0.55) to address persistent overfitting (train/val gap +1.82 at best_val ep21, +2.20 by ep28 in r18). Primary target: reduce gap to <1.2 at best_val epoch, push gated_pnl from 48 (r18) to 55+. pr_weight=6.0 headroom confirmed: prec_S=0.535/prec_B=0.455 at best_val -- well above 0.38 floor. If gap does not improve, next step is reduced hidden_channels 256->192 or dropout->0.25. | R_TCN_r3 (3M rows, early-stop ep15/30, label=US500_1m_dev): FAILED target. best_val_ep=8 val_loss=3.491 prec_S=0.633 prec_B=0.477 ppt=0.318 gated=107 (S:24+B:83). best_gated_ep=8 gated_pnl=34. 29% below r18 (34 vs 48). ROOT CAUSE: wd=0.012 induced wild S/B direction oscillation -- S:705/B:28 at ep5 flipped to S:50/B:213 at ep6; median S+B preds eps8-15 only 318 vs r18 stable 368. Volume deficit entirely explains gap: 107 vs 171 gated trades, gate survival identical 38-39%. Per-trade quality superior (ppt=0.318 vs r18 0.281) but insufficient volume. Gap target MET (ep8: +0.235) but wd=0.012 collapsed best_val to ep8 -- model under-training at ep8 (gnorm=90.8, still growing). Bullish val period exacerbates SELL collapse (prec_S=0.633, only 49 S-preds). rec_floor correctly calibrated: fired 2/16=12.5% epochs. pr dominated at 83-92% of val_loss throughout. Decision: r20 reverts to TCN/r2 (wd=0.008) + loss US500_1m_r20 (pr_weight=5.0, profit_weight=0.0) + label dev_r2.",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 6.0,
+    "recall_floor": 0.05,
+    "rec_floor_weight": 15.0,
+    "direction_penalty": 0.0,
+    "profit_weight": 5.0,
+    "eps": 1e-06
+  },
+  "US500_1m_r20": {
+    "_comment": "From US500_1m_r19. TWO CHANGES targeting gated_pnl maximisation. (1) pr_weight 6.0->5.0: r18 stabilised raw preds median ~368 (eps 8-28) vs 513+ required for 200 gated trades at 39% gate survival. Precision headroom at best_gated_ep=18: prec_S=0.463, prec_B=0.459 -- both 8-9pp above _GATED_MIN_PRECISION=0.38 floor, headroom being wasted by excess precision pressure. Natural high-volume transients at pr_weight=6.0 (ep8: 529 raw/200 gated/pnl=41, ep25: 494 raw/198 gated/pnl=47) confirm that ~500-pred volume produces acceptable precision (0.39-0.53) and ppt (0.20-0.24). Reducing pr_weight shifts the equilibrium to make these epochs the norm, not transient peaks. Expected: stabilised raw preds 440-560, gated trades 172-218, prec_S/B ~0.40-0.46 (above 0.38 floor). (2) profit_weight 5.0->0.0: pft component was <0.6% of total val_loss every epoch in r18 (max observed pft=0.024 vs val_loss ~3.6-4.7). Ungated profit was negative ALL 29 r18 epochs -- negative ungated profit makes the profit_weight term a positive-loss contribution that penalises SELL/BUY predictions, directionally opposing volume recovery. Removing it simplifies the loss surface and eliminates a second source of FLAT-pressure. Reintroduce at profit_weight=20-30 only once ungated profit is consistently positive (which requires precision above 50% break-even first). recall_floor=0.05 and rec_floor_weight=15.0 unchanged (correctly calibrated at 14% firing rate in r18). Pair with model-profile TCN/US500_1m_r3. Use --n-rows 3000000 --epochs 30. Target: gated_pnl >= 55 at best_gated_ep. | PRE-RUN CORRECTION (post-r19 analysis): Change model profile TCN/US500_1m_r3->TCN/US500_1m_r2. r19 proves wd=0.012 is root cause of S/B direction oscillation and 29% gated_pnl regression (34 vs 48). r2 (wd=0.008) was stable in r18 (median preds ~368, no oscillation). Loss params (pr_weight=5.0, profit_weight=0.0) confirmed correct. Updated CLI: --model-profile US500_1m_r2. Expected: stable median preds 440-500, gated trades 170-195, gated_pnl 46-55.",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 5.0,
+    "recall_floor": 0.05,
+    "rec_floor_weight": 15.0,
+    "direction_penalty": 0.0,
+    "profit_weight": 0.0,
+    "eps": 1e-06
+  },
+  "US500_1m_r21": {
+    "_comment": "From US500_1m_r20. ONE CHANGE: pr_weight 5.0->4.0. Quantitative rationale: r20 (pr_weight=5.0) produced median raw S+B preds of only 255/epoch eps1-6 (well below 400-1000 target) with volume collapse to 100-176 by eps5-6. pr component dominated at 79-92% of val_loss throughout r20 eps0-6 -- still too much precision pressure relative to volume recovery target. Critical r20 finding: eps0-2 produced gated_pnl=81/18/48 with 806/115/395 gated trades respectively -- far exceeding r18 best (48 pnl, 171 gated) -- but all three blocked by _GATED_MIN_PRECISION=0.38 (prec_S=0.298/0.363/0.374). Lowering pr_weight to 4.0 is designed to make high-volume epochs like ep0-2 the NORM rather than cold-start transients. Expected precision range: 0.30-0.42 (sufficient for _GATED_MIN_PRECISION=0.30 if user approves that code change; see r21 analysis notes). At pr_weight=4.0, expected volume 400-600 preds/epoch through ep15+, gated trades 156-234, gated_pnl target 55-75. Gate survival confirmed 38-42% across all r20 epochs. recall_floor=0.05 unchanged (correct: r20 fired 3/7=43% but at genuine soft_recall collapse ~0.007; floor level correct, oscillation is the pr_weight/recall competition). profit_weight=0.0 unchanged. Pair with TCN/US500_1m_r2, label US500_1m_dev_r2. Use --n-rows 3000000 --epochs 30 --patience 7.",
+    "gamma": 2.0,
+    "trade_classes": [
+      0,
+      2
+    ],
+    "pr_weight": 4.0,
+    "recall_floor": 0.05,
+    "rec_floor_weight": 15.0,
+    "direction_penalty": 0.0,
+    "profit_weight": 0.0,
+    "eps": 1e-06
   }
 }

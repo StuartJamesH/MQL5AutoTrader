@@ -1,5 +1,6 @@
 {
   "US500_1m_dev": {
+    "_comment": "R18 (TCN r2 + loss r18): best_val_ep=21 val_loss=3.604 prec_S=0.535 prec_B=0.455 ppt=0.268 gated=138. best_gated_ep=18 gated_pnl=48 ppt=0.281 prec_S=0.463 prec_B=0.459 gated=171 ungated=436. Volume binding constraint: median ungated preds ~368/epoch vs 400-600 target. tpt=1.0 is root bottleneck for minority-class density; superseded by US500_1m_dev_r2 (tpt=0.85).",
     "regime_params": {
       "ma_period": 60,
       "slope_smoothness": 50,
@@ -14,10 +15,33 @@
       "z_thresh": 1,
       "z_limit": 5,
       "atr_window": 14,
-      "tp_mult": 2.6,
-      "sl_mult": 2.0,
+      "tp_mult": 2.5,
+      "sl_mult": 2.5,
       "max_horizon": 90,
       "trend_pullback_thresh": 1.0,
+      "skip_range": true
+    }
+  },
+  "US500_1m_dev_r2": {
+    "_comment": "From US500_1m_dev. ONE CHANGE: trend_pullback_thresh 1.0->0.85. Quantitative rationale: full 3.22M bar analysis shows tpt=0.85 increases S+B label density from 5.06% to 5.91% (+16.8%), providing ~25,300 additional minority-class training examples per run. TP hit rate improves marginally from 37.3% to 37.8% -- shallower pullbacks in already-detected uptrends are equally viable signals. max_horizon extension rejected (adds <0.02% labels, negligible); tp/sl reduction from 2.5->2.0 also rejected (reduces both density 5.06->4.73% AND quality TP rate 37.3->34.9%). tpt=0.70 considered but deferred -- validate 0.85 first then step to 0.70 if needed. No regime gate misalignment: trend_pullback_thresh only affects labeller entry filter; causal_market_regime/breakout/Donchian gates at inference are unaffected. EURUSD_1m_dev already uses tpt=0.85 as its baseline. Pair with loss-profile US500_1m_r20 (pr_weight=5.0, profit_weight=0.0) and model-profile TCN/US500_1m_r3. Expected: S+B density 5.06->5.91%, more stable minority-class decision boundary, median ungated preds increase from ~368 (r18) to ~430-460, best-gated gated trades 171->200-230 (first time exceeding 200+ threshold), gated_pnl 48->52-63.",
+    "regime_params": {
+      "ma_period": 60,
+      "slope_smoothness": 50,
+      "regime_min_duration": 0,
+      "atr_window": 60,
+      "atr_lookback": 720,
+      "atr_percentile": 0.0,
+      "slope_threshold": 5e-06
+    },
+    "label_params": {
+      "z_window": 14,
+      "z_thresh": 1,
+      "z_limit": 5,
+      "atr_window": 14,
+      "tp_mult": 2.5,
+      "sl_mult": 2.5,
+      "max_horizon": 90,
+      "trend_pullback_thresh": 0.85,
       "skip_range": true
     }
   },
@@ -86,6 +110,73 @@
       "sl_mult": 2.0,
       "max_horizon": 90,
       "trend_pullback_thresh": 0.85,
+      "skip_range": true
+    }
+  },
+  "EURUSD_1m_flat": {
+    "_comment": "From EURUSD_1m_dev. Labeller updated to use H/L for exit simulation (Change 2, 2026-05-xx). Previous EURUSD_1m_dev used Close prices for exit, creating label/outcome inconsistency (PnL evaluator uses H/L). With H/L: more SELL/BUY labels expected (~4-6% each vs ~2.4%), FLAT drops from 95.2% to ~88-92%. May need lower recall_floor if natural recall increases above 0.10 with denser signals. All barrier params unchanged.",
+    "regime_params": {
+      "ma_period": 60,
+      "slope_smoothness": 50,
+      "regime_min_duration": 0,
+      "atr_window": 60,
+      "atr_lookback": 720,
+      "atr_percentile": 0.0,
+      "slope_threshold": 3e-06
+    },
+    "label_params": {
+      "z_window": 14,
+      "z_thresh": 1,
+      "z_limit": 5,
+      "atr_window": 14,
+      "tp_mult": 2.5,
+      "sl_mult": 2.5,
+      "max_horizon": 90,
+      "trend_pullback_thresh": 0.85,
+      "skip_range": true
+    }
+  },
+  "EURUSD_M1_prod": {
+    "regime_params": {
+      "ma_period": 60,
+      "slope_smoothness": 50,
+      "regime_min_duration": 0,
+      "atr_window": 60,
+      "atr_lookback": 720,
+      "atr_percentile": 0.0,
+      "slope_threshold": 3e-06
+    },
+    "label_params": {
+      "z_window": 14,
+      "z_thresh": 1,
+      "z_limit": 5,
+      "atr_window": 14,
+      "tp_mult": 2.5,
+      "sl_mult": 2.5,
+      "max_horizon": 90,
+      "trend_pullback_thresh": 0.85,
+      "skip_range": true
+    }
+  },
+  "US500_M1_test": {
+    "regime_params": {
+      "ma_period": 60,
+      "slope_smoothness": 50,
+      "regime_min_duration": 0,
+      "atr_window": 60,
+      "atr_lookback": 720,
+      "atr_percentile": 0.0,
+      "slope_threshold": 2e-06
+    },
+    "label_params": {
+      "z_window": 14,
+      "z_thresh": 1,
+      "z_limit": 5,
+      "atr_window": 14,
+      "tp_mult": 2.5,
+      "sl_mult": 2.5,
+      "max_horizon": 90,
+      "trend_pullback_thresh": -1,
       "skip_range": true
     }
   }
