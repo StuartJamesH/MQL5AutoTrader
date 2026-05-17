@@ -796,3 +796,153 @@ class TradePrecisionLoss(nn.Module):
             penalties[trade_mask] += self.margin_weight * margin_violation
 
         return (focal + penalties).mean()
+
+
+class GatedVolumeFocalLoss(nn.Module):
+    """Gated-PnL-optimised loss for 3-class (SELL=0 / FLAT=1 / BUY=2) trade entry classification.
+
+    Replaces the continuous precision penalty of TradeProfitabilityLoss with
+    hinge-based guards on precision, volume, and recall.  Focal CE is the
+    dominant training signal (~80–90 % of total loss) when all guards are
+    satisfied.
+
+    Motivation
+    ----------
+    Empirical analysis across US500 runs r17–r20 shows:
+        Corr(gated_volume, gated_pnl) = +0.924
+        Corr(precision,    gated_pnl) = -0.596
+    The continuous ``pr_weight x (1 - soft_prec)`` penalty in
+    TradeProfitabilityLoss dominated 79–92 % of validation loss and drove a
+    9x volume collapse (r20: 2 126 preds ep0 -> 243 ep4 -> 100 ep5), costing
+    2.2x more gated PnL than it created.
+
+    Design
+    ------
+    L_total = L_fce + L_vol + L_prec + L_rec
+
+    - L_fce:  Focal cross-entropy (primary signal, ~80–90 % of total when healthy)
+    - L_vol:  Quadratic hinge on soft pred rate — active only below vol_floor
+    - L_prec: Quadratic hinge on per-direction soft precision — active only below prec_floor
+    - L_rec:  Quadratic hinge on per-direction soft recall — unchanged from TradeProfitabilityLoss
+
+    All three guards are dormant at the target operating point
+    (prec ~0.30–0.45, raw S+B preds ~500–1500, recall > 0.05), allowing
+    CE to optimise freely within the feasibility region they define.
+
+    API compatibility
+    -----------------
+    The ``forward`` signature is identical to TradeProfitabilityLoss:
+        loss = criterion(logits, targets, trade_outcomes)
+    ``trade_outcomes`` is accepted but ignored (no profit term in this class).
+    ``return_components`` returns the same keys as TradeProfitabilityLoss plus
+    ``vol_loss``; unused keys (``confusion_loss``, ``profit_loss``) are 0.0.
+    """
+
+    def __init__(
+        self,
+        alpha=None,
+        gamma: float = 2.0,
+        trade_classes=(0, 2),
+        # Volume hinge
+        vol_floor: float = 0.040,
+        vol_floor_weight: float = 120.0,
+        # Precision hinge
+        prec_floor: float = 0.28,
+        prec_floor_weight: float = 25.0,
+        # Recall hinge (unchanged from TradeProfitabilityLoss)
+        recall_floor: float = 0.05,
+        rec_floor_weight: float = 15.0,
+        eps: float = 1e-6,
+    ):
+        """
+        Args:
+            alpha:              Class weights tensor for focal CE [SELL, FLAT, BUY].
+                                Auto-computed by the trainer; do not set in JSON profile.
+            gamma:              Focal loss exponent. 2.0 validated across r17–r20.
+            trade_classes:      (sell_idx, buy_idx) — indices of the two trade classes.
+            vol_floor:          Minimum soft prediction rate (mean P(SELL)+P(BUY) per bar).
+                                0.040 corresponds to ~510 hard predictions on a ~48k val set.
+                                Volume hinge fires only below this floor.
+            vol_floor_weight:   Volume hinge strength. 120 -> L_vol ~0.012 at ep5-r20
+                                collapse severity (4 % of L_fce ~0.30). Dormant at
+                                healthy volume (pred_rate >= vol_floor).
+            prec_floor:         Minimum acceptable soft precision per direction.
+                                0.28 is below ep0-r20 prec_S=0.298 (hinge dormant there).
+                                Precision hinge fires only below this floor.
+            prec_floor_weight:  Precision hinge strength. 25 -> L_prec ~0.25 at the
+                                danger zone (prec=0.20), i.e. ~80 % of L_fce. Dormant
+                                above prec_floor.
+            recall_floor:       Minimum soft recall per direction (collapse guard only).
+                                0.05 — unchanged from r17+.
+            rec_floor_weight:   Recall hinge strength. 15.0 — unchanged from r17+.
+            eps:                Numerical stability constant.
+        """
+        super().__init__()
+        self.alpha             = alpha
+        self.gamma             = float(gamma)
+        self.sell_cls          = int(trade_classes[0])
+        self.buy_cls           = int(trade_classes[1])
+        self.vol_floor         = float(vol_floor)
+        self.vol_floor_weight  = float(vol_floor_weight)
+        self.prec_floor        = float(prec_floor)
+        self.prec_floor_weight = float(prec_floor_weight)
+        self.recall_floor      = float(recall_floor)
+        self.rec_floor_weight  = float(rec_floor_weight)
+        self.eps               = float(eps)
+
+    def forward(self, logits, targets, trade_outcomes=None,
+                return_components: bool = False):
+        """
+        Args:
+            logits:            (B, 3) raw model outputs
+            targets:           (B,)   integer class labels (0=SELL, 1=FLAT, 2=BUY)
+            trade_outcomes:    ignored (retained for API compatibility)
+            return_components: if True, return dict of component scalars
+        """
+        probs     = torch.softmax(logits, dim=1)         # (B, 3)
+        p_sell    = probs[:, self.sell_cls]              # (B,)
+        p_buy     = probs[:, self.buy_cls]               # (B,)
+        true_sell = (targets == self.sell_cls).float()   # (B,)
+        true_buy  = (targets == self.buy_cls).float()    # (B,)
+
+        # ── 1. Focal cross-entropy ────────────────────────────────────────────
+        ce    = F.cross_entropy(logits, targets, weight=self.alpha, reduction='none')
+        pt    = probs[torch.arange(len(targets)), targets]
+        focal = ((1.0 - pt) ** self.gamma) * ce
+        L_fce = focal.mean()
+
+        # ── 2. Volume floor hinge ─────────────────────────────────────────────
+        # pred_rate = mean soft probability mass on SELL + BUY classes
+        pred_rate = (p_sell + p_buy).mean()              # scalar in [0, 1]
+        vol_viol  = F.relu(self.vol_floor - pred_rate)
+        L_vol     = self.vol_floor_weight * (vol_viol ** 2)
+
+        # ── 3. Precision floor hinge ──────────────────────────────────────────
+        # sp_d = weighted fraction of predicted-d probability mass on true-d bars
+        sp_sell     = (p_sell * true_sell).sum() / (p_sell.sum() + self.eps)
+        sp_buy      = (p_buy  * true_buy ).sum() / (p_buy.sum()  + self.eps)
+        prec_viol_s = F.relu(self.prec_floor - sp_sell)
+        prec_viol_b = F.relu(self.prec_floor - sp_buy)
+        L_prec      = self.prec_floor_weight * (prec_viol_s ** 2 + prec_viol_b ** 2)
+
+        # ── 4. Recall floor hinge (unchanged from TradeProfitabilityLoss) ─────
+        sr_sell    = (p_sell * true_sell).sum() / (true_sell.sum() + self.eps)
+        sr_buy     = (p_buy  * true_buy ).sum() / (true_buy.sum()  + self.eps)
+        rec_viol_s = F.relu(self.recall_floor - sr_sell)
+        rec_viol_b = F.relu(self.recall_floor - sr_buy)
+        L_rec      = self.rec_floor_weight * (rec_viol_s ** 2 + rec_viol_b ** 2)
+
+        # ── Total ─────────────────────────────────────────────────────────────
+        total = L_fce + L_vol + L_prec + L_rec
+
+        if return_components:
+            return {
+                "total":          float(total.item())  if not total.requires_grad  else total,
+                "focal_ce":       float(L_fce.item())  if not L_fce.requires_grad  else L_fce,
+                "vol_loss":       float(L_vol.item()),
+                "precision_loss": float(L_prec.item()) if not L_prec.requires_grad else L_prec,
+                "recall_loss":    float(L_rec.item())  if not L_rec.requires_grad  else L_rec,
+                "confusion_loss": 0.0,  # not used; kept for API compatibility
+                "profit_loss":    0.0,  # not used; kept for API compatibility
+            }
+        return total
