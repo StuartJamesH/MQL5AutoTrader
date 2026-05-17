@@ -53,6 +53,7 @@ from Learn.Loaders import SequenceDataset
 from Learn.Models import LSTMAttentionSEClassifier, TCNAttentionSEClassifier
 from Learn.Loss import TradeProfitabilityLoss
 
+_GATED_MIN_PRECISION = 0.30
 
 # ---------------------------------------------------------------------------
 # Symbol → dataset CSV and feature function
@@ -398,6 +399,7 @@ def build_dataloaders(
         "features":            features,
         "scaler":              scaler,
         "preprocess_ohlcv_args": preprocess_ohlcv_args,
+        "val_seq_idx":         val_seq_idx,
     }
 
 
@@ -410,14 +412,22 @@ def _build_val_gate_arrays(
     df_val_raw: pd.DataFrame,
     regime_params: dict,
     seq_len: int,
+    val_seq_idx: list,
+    row_offset: int = 0,
 ) -> dict:
     """Pre-compute structural gate arrays aligned to validation prediction positions.
 
-    Prediction k (0-indexed, shuffle=False) comes from sequence i=k which covers
-    X_val[k : k+seq_len].  The label anchor is at row ``k + seq_len - 1`` in
-    df_val_raw (confirmed by SequenceDataset.__getitem__: y[i+seq_len-1]).
+    ``val_seq_idx`` is the list of sequence start indices into ``X_val`` that
+    the val DataLoader actually uses (identical to the seq_idx_filter passed to
+    SequenceDataset).  ``row_offset = len(df_val_raw) - len(X_val)`` accounts
+    for the NaN rows that ``preprocess_ohlcv`` drops from the beginning of the
+    feature-engineered df before building X_val.
 
-    Returns numpy arrays of length n_preds = len(df_val_raw) - seq_len:
+    For sequence ``i`` in val_seq_idx:
+      anchor bar in df_val_raw  =  i + seq_len - 1 + row_offset
+      next   bar in df_val_raw  =  i + seq_len     + row_offset
+
+    Returns numpy arrays of length ``len(val_seq_idx)``:
       regime    — causal_market_regime output (+1 / 0 / -1) at anchor bar
       donchian  — donchian_trend output (+1 / 0 / -1) at anchor bar
       sig_high  — anchor bar High (breakout: BUY needs next bar to exceed this)
@@ -425,9 +435,6 @@ def _build_val_gate_arrays(
       next_high — bar after anchor High
       next_low  — bar after anchor Low
     """
-    n_rows  = len(df_val_raw)
-    n_preds = n_rows - seq_len
-
     regime_series = causal_market_regime(df_val_raw.copy(), **regime_params)
     regime_arr    = regime_series.values  # (n_rows,)
 
@@ -436,19 +443,24 @@ def _build_val_gate_arrays(
 
     high_arr = df_val_raw["High"].values
     low_arr  = df_val_raw["Low"].values
+    n_rows   = len(df_val_raw)
 
-    # anchor bar for prediction k is at row k + seq_len - 1
-    anc = slice(seq_len - 1, n_rows - 1)  # length = n_preds
-    # next bar (breakout confirmation) is at row k + seq_len
-    nxt = slice(seq_len, n_rows)           # length = n_preds
+    idx = np.array(val_seq_idx, dtype=np.intp)
+    anc_idx = idx + seq_len - 1 + row_offset  # anchor bar positions in df_val_raw
+    nxt_idx = idx + seq_len     + row_offset  # next    bar positions in df_val_raw
+
+    # Clamp next-bar index to valid range; out-of-bound sequences pass anchor
+    # values so the breakout gate will neutralise them (next == sig → no trade).
+    nxt_safe = np.minimum(nxt_idx, n_rows - 1)
+    valid    = nxt_idx < n_rows
 
     return {
-        "regime":    regime_arr[anc].copy(),
-        "donchian":  donchian_arr[anc].copy(),
-        "sig_high":  high_arr[anc].copy(),
-        "sig_low":   low_arr[anc].copy(),
-        "next_high": high_arr[nxt].copy(),
-        "next_low":  low_arr[nxt].copy(),
+        "regime":    regime_arr[anc_idx].copy(),
+        "donchian":  donchian_arr[anc_idx].copy(),
+        "sig_high":  high_arr[anc_idx].copy(),
+        "sig_low":   low_arr[anc_idx].copy(),
+        "next_high": np.where(valid, high_arr[nxt_safe], high_arr[anc_idx]),
+        "next_low":  np.where(valid, low_arr[nxt_safe],  low_arr[anc_idx]),
     }
 
 
@@ -551,12 +563,12 @@ def _compute_gated_pnl(
       3. Donchian — BUY only when donchian_trend > 0;
                     SELL only when donchian_trend < 0
 
-    Returns (gated_total_pnl, gated_ppt, n_sell_gated, n_buy_gated).
-    Returns (nan, nan, 0, 0) if prediction count doesn't match gate arrays.
+    Returns (gated_total_pnl, gated_ppt, n_sell_gated, n_buy_gated, profit_sell, profit_buy).
+    Returns (nan, nan, 0, 0, nan, nan) if prediction count doesn't match gate arrays.
     """
     n_gate = len(gate_arrays["regime"])
     if len(all_preds) != n_gate:
-        return float("nan"), float("nan"), 0, 0
+        return float("nan"), float("nan"), 0, 0, float("nan"), float("nan")
 
     preds = all_preds.copy()
 
@@ -593,7 +605,7 @@ def _compute_gated_pnl(
     total_pnl = profit_sell + profit_buy
     gated_ppt = total_pnl / n_trades if n_trades > 0 else float("nan")
 
-    return total_pnl, gated_ppt, n_sell, n_buy
+    return total_pnl, gated_ppt, n_sell, n_buy, profit_sell, profit_buy
 
 
 # ---------------------------------------------------------------------------
@@ -833,10 +845,18 @@ def main(argv=None) -> None:
     )
 
     # --- Pre-compute validation gate arrays (regime + breakout + Donchian) ---
-    gate_arrays = _build_val_gate_arrays(df_val_raw, _regime_params, _seq_len)
+    # row_offset corrects for NaN rows dropped by preprocess_ohlcv, so that gate
+    # array positions align exactly with the sequences in the val DataLoader.
+    _row_offset = len(df_val_raw) - len(data_pack["X_val"])
+    gate_arrays = _build_val_gate_arrays(
+        df_val_raw, _regime_params, _seq_len,
+        val_seq_idx=data_pack["val_seq_idx"],
+        row_offset=_row_offset,
+    )
     logger.info(
-        "Val gate arrays built | n_preds=%d (regime±1, breakout, donchian gates active)",
-        len(gate_arrays["regime"]),
+        "Val gate arrays built | n_preds=%d row_offset=%d "
+        "(regime±1, breakout, donchian gates active)",
+        len(gate_arrays["regime"]), _row_offset,
     )
 
     # --- Class weights and bias init ---
@@ -975,11 +995,14 @@ def main(argv=None) -> None:
             history["pred_dist"].append(eval_pack["pred_counts"])
             history["loss_components_curve"].append(eval_pack["loss_components"])
 
-            g_pnl, g_ppt, g_sell, g_buy = _compute_gated_pnl(
+            g_pnl, g_ppt, g_sell, g_buy, g_pnl_sell, g_pnl_buy = _compute_gated_pnl(
                 eval_pack["preds"], eval_pack["outcomes"], gate_arrays, commission
             )
+            prec_sell = eval_pack["prec_sell"]
+            prec_buy = eval_pack["prec_buy"]
+            gated_precision_ok = (prec_sell >= _GATED_MIN_PRECISION) and (prec_buy >= _GATED_MIN_PRECISION)
             history["gated_pnl"].append(g_pnl)
-            if not math.isnan(g_pnl) and g_pnl > history["best_gated_pnl"]:
+            if not math.isnan(g_pnl) and g_pnl > history["best_gated_pnl"] and gated_precision_ok:
                 history["best_gated_pnl"]       = g_pnl
                 history["best_gated_pnl_epoch"] = epoch
                 best_gated_model_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
@@ -1000,12 +1023,16 @@ def main(argv=None) -> None:
 
             _lc = eval_pack["loss_components"]
             _pd = eval_pack["pred_counts"]
-            _g_pnl_str = f"{g_pnl:.2f}" if not math.isnan(g_pnl) else "nan"
-            _g_ppt_str = f"{g_ppt:.3f}" if not math.isnan(g_ppt) else "nan"
+            _g_pnl_str      = f"{g_pnl:.2f}"      if not math.isnan(g_pnl)      else "nan"
+            _g_ppt_str      = f"{g_ppt:.3f}"       if not math.isnan(g_ppt)      else "nan"
+            _g_pnl_sell_str = f"{g_pnl_sell:.2f}"  if not math.isnan(g_pnl_sell) else "nan"
+            _g_pnl_buy_str  = f"{g_pnl_buy:.2f}"   if not math.isnan(g_pnl_buy)  else "nan"
+            _g_flat         = len(eval_pack["preds"]) - g_sell - g_buy
             logger.info(
                 "Epoch %d | train=%.4f val=%.4f gap=%+.4f lr=%.2e gnorm=%.4f | "
                 "acc=%.4f profit=%.2f (S %.2f B %.2f) | "
-                "preds=[S:%d F:%d B:%d] | gated_pnl=%s (S:%d B:%d ppt=%s) | "
+                "preds=[S:%d F:%d B:%d] | gated_preds=[S:%d F:%d B:%d] | "
+                "gated_pnl=%s (S:%s B:%s ppt=%s) | "
                 "prec[S=%.3f B=%.3f] rec[S=%.3f B=%.3f] | "
                 "loss[fce=%.3f pr=%.3f rec=%.3f dir=%.3f pft=%.3f]%s",
                 epoch,
@@ -1019,7 +1046,8 @@ def main(argv=None) -> None:
                 eval_pack["profit_sell"],
                 eval_pack["profit_buy"],
                 _pd[0], _pd[1], _pd[2],
-                _g_pnl_str, g_sell, g_buy, _g_ppt_str,
+                g_sell, _g_flat, g_buy,
+                _g_pnl_str, _g_pnl_sell_str, _g_pnl_buy_str, _g_ppt_str,
                 eval_pack["prec_sell"], eval_pack["prec_buy"],
                 eval_pack["rec_sell"],  eval_pack["rec_buy"],
                 _lc["focal_ce"], _lc["precision_loss"], _lc["recall_loss"], _lc["confusion_loss"], _lc.get("profit_loss", 0.0),
