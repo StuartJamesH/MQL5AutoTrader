@@ -846,9 +846,12 @@ class GatedVolumeFocalLoss(nn.Module):
         # Volume hinge
         vol_floor: float = 0.040,
         vol_floor_weight: float = 120.0,
-        # Precision hinge
+        # Precision hinge (guard — fires below prec_floor)
         prec_floor: float = 0.28,
         prec_floor_weight: float = 25.0,
+        # Precision reward band (optional — fires above prec_floor up to prec_target)
+        prec_target: float = None,
+        prec_reward_weight: float = 0.0,
         # Recall hinge (unchanged from TradeProfitabilityLoss)
         recall_floor: float = 0.05,
         rec_floor_weight: float = 15.0,
@@ -884,8 +887,10 @@ class GatedVolumeFocalLoss(nn.Module):
         self.buy_cls           = int(trade_classes[1])
         self.vol_floor         = float(vol_floor)
         self.vol_floor_weight  = float(vol_floor_weight)
-        self.prec_floor        = float(prec_floor)
-        self.prec_floor_weight = float(prec_floor_weight)
+        self.prec_floor         = float(prec_floor)
+        self.prec_floor_weight  = float(prec_floor_weight)
+        self.prec_target        = float(prec_target) if prec_target is not None else None
+        self.prec_reward_weight = float(prec_reward_weight)
         self.recall_floor      = float(recall_floor)
         self.rec_floor_weight  = float(rec_floor_weight)
         self.eps               = float(eps)
@@ -917,13 +922,23 @@ class GatedVolumeFocalLoss(nn.Module):
         vol_viol  = F.relu(self.vol_floor - pred_rate)
         L_vol     = self.vol_floor_weight * (vol_viol ** 2)
 
-        # ── 3. Precision floor hinge ──────────────────────────────────────────
+        # ── 3. Precision hinge (guard) + reward band ──────────────────────────────────────
         # sp_d = weighted fraction of predicted-d probability mass on true-d bars
-        sp_sell     = (p_sell * true_sell).sum() / (p_sell.sum() + self.eps)
-        sp_buy      = (p_buy  * true_buy ).sum() / (p_buy.sum()  + self.eps)
-        prec_viol_s = F.relu(self.prec_floor - sp_sell)
-        prec_viol_b = F.relu(self.prec_floor - sp_buy)
-        L_prec      = self.prec_floor_weight * (prec_viol_s ** 2 + prec_viol_b ** 2)
+        sp_sell       = (p_sell * true_sell).sum() / (p_sell.sum() + self.eps)
+        sp_buy        = (p_buy  * true_buy ).sum() / (p_buy.sum()  + self.eps)
+        # Guard: quadratic hinge below prec_floor (collapse prevention — unchanged)
+        prec_viol_s   = F.relu(self.prec_floor - sp_sell)
+        prec_viol_b   = F.relu(self.prec_floor - sp_buy)
+        L_prec_guard  = self.prec_floor_weight * (prec_viol_s ** 2 + prec_viol_b ** 2)
+        # Reward band: linear reward above prec_floor up to prec_target (quality improvement)
+        if self.prec_target is not None and self.prec_reward_weight > 0.0:
+            _band         = self.prec_target - self.prec_floor       # width of reward band
+            reward_s      = (sp_sell - self.prec_floor).clamp(0.0, _band)
+            reward_b      = (sp_buy  - self.prec_floor).clamp(0.0, _band)
+            L_prec_reward = -self.prec_reward_weight * (reward_s + reward_b)
+        else:
+            L_prec_reward = sp_sell.new_zeros(())
+        L_prec = L_prec_guard + L_prec_reward
 
         # ── 4. Recall floor hinge (unchanged from TradeProfitabilityLoss) ─────
         sr_sell    = (p_sell * true_sell).sum() / (true_sell.sum() + self.eps)
@@ -940,7 +955,9 @@ class GatedVolumeFocalLoss(nn.Module):
                 "total":          float(total.item())  if not total.requires_grad  else total,
                 "focal_ce":       float(L_fce.item())  if not L_fce.requires_grad  else L_fce,
                 "vol_loss":       float(L_vol.item()),
-                "precision_loss": float(L_prec.item()) if not L_prec.requires_grad else L_prec,
+                "precision_loss":        (float((L_prec_guard + L_prec_reward).item())
+                                         if not (L_prec_guard + L_prec_reward).requires_grad
+                                         else (L_prec_guard + L_prec_reward)),
                 "recall_loss":    float(L_rec.item())  if not L_rec.requires_grad  else L_rec,
                 "confusion_loss": 0.0,  # not used; kept for API compatibility
                 "profit_loss":    0.0,  # not used; kept for API compatibility
