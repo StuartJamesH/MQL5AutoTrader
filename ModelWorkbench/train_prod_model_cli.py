@@ -869,10 +869,13 @@ def main(argv=None) -> None:
 
     counts      = np.maximum(np.bincount(y_train_arr, minlength=3), 1)
     raw_weights = (len(y_train_arr) / (len(counts) * counts)).astype(float)
-    weights     = np.power(raw_weights, 0.6)
+    _alpha_power = float(base_loss_params.get("alpha_power", 0.6))
+    weights      = np.power(raw_weights, _alpha_power)
     weights[1]  = min(weights[1], (weights[0] + weights[2]) / 2.0)
     weights     = weights / weights.mean()
     class_weights = torch.tensor(weights, dtype=torch.float32).to(device)
+    logger.info("Alpha class weights (power=%.2f): SELL=%.3f FLAT=%.3f BUY=%.3f",
+                _alpha_power, weights[0], weights[1], weights[2])
 
     # --- Model ---
     if resume_pack:
@@ -902,6 +905,7 @@ def main(argv=None) -> None:
         "GatedVolumeFocalLoss":   GatedVolumeFocalLoss,
     }
     loss_params = dict(base_loss_params)
+    loss_params.pop("alpha_power", None)          # consumed above in alpha weight computation
     loss_params["alpha"] = class_weights
     _loss_class_name = loss_params.pop("loss_class", "TradeProfitabilityLoss")
     criterion = _LOSS_CLASS_MAP[_loss_class_name](**loss_params)
