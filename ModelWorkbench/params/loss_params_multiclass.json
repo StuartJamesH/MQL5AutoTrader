@@ -1,5 +1,5 @@
 {
-  "_comment": "Loss function profiles for TradeProfitabilityLoss (multiclass). Select with --loss-profile. 'alpha' (class weights tensor) is computed automatically from the training label distribution — do not add it here.",
+  "_comment": "Loss function profiles for multiclass trade entry models. Supports TradeProfitabilityLoss (default) and GatedVolumeFocalLoss (loss_class key). Select with --loss-profile. 'alpha' (class weights tensor) is computed automatically from the training label distribution — do not add it here.",
   "US500_1m_dev": {
     "_comment": "US500 1m dev profile. Reduced gamma+pr_weight to prevent BUY collapse; strong rec_floor_weight to overcome L2 minority suppression. R(Apr30): best_ep=7 val_loss=7.34 prec_S=0.363 prec_B=0.473 ppt=0.234 — BUY recall (0.119) was BELOW recall_floor (0.15) every single epoch; rec_floor_weight=90 fired each epoch creating violent corrections and oscillating val loss (range 7.34–8.79). ppt improved to 0.466 at ep13 despite rising val_loss → val_loss not a good proxy; model never converged cleanly. Superseded by US500_1m_r2.",
     "gamma": 2.0,
@@ -496,6 +496,72 @@
     "rec_floor_weight": 15.0,
     "direction_penalty": 0.0,
     "profit_weight": 0.0,
+    "eps": 1e-06
+  },
+  "US500_gvfl_r1": {
+    "_comment": "GatedVolumeFocalLoss first validation run. Replaces continuous pr_weight with vol+prec hinge guards. Motivation: r20 ep0 gated_pnl=81 (806 gated) destroyed by pr_weight=5.0 driving vol to 243 preds by ep4 (gated_pnl=38). Corr(vol,gpnl)=+0.924 vs Corr(prec,gpnl)=-0.596 across 73 epochs. CE is now ~80-90% of loss when both guards satisfied (vs 8-17% in r17-r20). vol_floor=0.040 (~510 hard preds on 48k val; hinge dormant at ep0-r20 pred_rate~0.070, fires at ep5-r20 collapse pred_rate~0.031). prec_floor=0.28 (dormant at ep0-r20 prec_S=0.298). recall_floor=0.05 unchanged from r17+. | R1: best_ep=12 val_loss=0.0227 best_gated_ep=8 gated_pnl=118 prec_S=0.341 prec_B=0.317 recall_S=0.893 recall_B=0.950. Vol stable 7800-10000 S+B preds. Precision plateaued 0.32-0.34 from ep4+: all hinges dormant, pure focal CE. Root cause: prec_floor=0.28 below CE equilibrium (soft prec approx 0.28 when hard approx 0.330). Superseded by r4.",
+    "loss_class": "GatedVolumeFocalLoss",
+    "gamma": 2.0,
+    "trade_classes": [0, 2],
+    "vol_floor": 0.040,
+    "vol_floor_weight": 120.0,
+    "prec_floor": 0.28,
+    "prec_floor_weight": 25.0,
+    "recall_floor": 0.05,
+    "rec_floor_weight": 15.0,
+    "eps": 1e-06
+  },
+  "US500_gvfl_r2": {
+    "_comment": "Fallback from r1: increase vol_floor_weight if r1 shows vol collapse despite hinge (symptom: vol_loss>0 every epoch, raw S+B preds<200 by ep5). All other params from r1.",
+    "loss_class": "GatedVolumeFocalLoss",
+    "gamma": 2.0,
+    "trade_classes": [0, 2],
+    "vol_floor": 0.040,
+    "vol_floor_weight": 200.0,
+    "prec_floor": 0.28,
+    "prec_floor_weight": 25.0,
+    "recall_floor": 0.05,
+    "rec_floor_weight": 15.0,
+    "eps": 1e-06
+  },
+  "US500_gvfl_r3": {
+    "_comment": "Fallback from r1/r2: lower vol_floor if oscillation observed between vol and prec hinges. vol_floor=0.030 ~250 hard preds (minimum acceptable). prec_floor raised to 0.30 for extra quality guard.",
+    "loss_class": "GatedVolumeFocalLoss",
+    "gamma": 2.0,
+    "trade_classes": [0, 2],
+    "vol_floor": 0.030,
+    "vol_floor_weight": 200.0,
+    "prec_floor": 0.30,
+    "prec_floor_weight": 25.0,
+    "recall_floor": 0.05,
+    "rec_floor_weight": 15.0,
+    "eps": 1e-06
+  },
+  "US500_gvfl_r4": {
+    "_comment": "From US500_gvfl_r1. Root cause r1 plateau: prec_floor=0.28 below CE equilibrium (~soft 0.28 equiv hard 0.33). All hinges dormant from ep4+, 100% focal CE from ep6+. FIX: prec_floor 0.28->0.33 fires hinge until hard prec reaches ~0.38 (gated_min_precision threshold). Soft/hard offset ~0.05 calibrated from r1 ep2 (hard=0.330 exactly at hinge-off). vol_floor 0.04->0.06 (2935 min preds) + vol_weight 120->200 provide stronger guard during precision push. gamma 2.0->2.5 for mild FP penalization. No alpha_power change: existing recall bias acts as natural vol-collapse buffer.",
+    "loss_class": "GatedVolumeFocalLoss",
+    "gamma": 2.5,
+    "trade_classes": [0, 2],
+    "vol_floor": 0.060,
+    "vol_floor_weight": 200.0,
+    "prec_floor": 0.33,
+    "prec_floor_weight": 25.0,
+    "recall_floor": 0.05,
+    "rec_floor_weight": 15.0,
+    "eps": 1e-06
+  },
+  "US500_gvfl_r5": {
+    "_comment": "From US500_gvfl_r4. Aspirational precision push to hard prec ~0.41. prec_floor 0.33->0.36 (soft) equiv hard target ~0.41. At plateau prec=0.33, L_prec reaches 88% of total loss — near TradeProfitabilityLoss territory — so two mitigations: vol_floor_weight 200->250 (strong floor guard) + alpha_power=0.45 (recall bias 8.5x->5.0x, gives precision room vs recall counter-force). Requires alpha_power support in trainer (Change 3) to be implemented first.",
+    "loss_class": "GatedVolumeFocalLoss",
+    "gamma": 2.5,
+    "trade_classes": [0, 2],
+    "alpha_power": 0.45,
+    "vol_floor": 0.065,
+    "vol_floor_weight": 250.0,
+    "prec_floor": 0.36,
+    "prec_floor_weight": 20.0,
+    "recall_floor": 0.05,
+    "rec_floor_weight": 15.0,
     "eps": 1e-06
   }
 }
