@@ -1,0 +1,63 @@
+{
+  "run_timestamp": "20260522_235356",
+  "symbol": "US500",
+  "csv_source": "C:\\Users\\Stuart\\Desktop\\Trading Bot\\MLQ5-Production\\data\\US500_M1_520weeks.csv",
+  "model_pack": "C:\\Users\\Stuart\\Desktop\\Trading Bot\\MLQ5-Production\\Engine\\Model Packs\\US500_M1_520weeks_TCN_Multiclass_256seq_lbl-US500_1m_dev_r3_mdl-US500_1m_r2_loss-US500_gvfl_r7_20260521_1744_gvfl_r1f_model.pkl",
+  "n_rows": 30000,
+  "strategy_params": {
+    "patience": 1,
+    "risk": 20.0,
+    "maxpos": 5.0,
+    "trade_threshold": 0.6,
+    "donchian_length": 60,
+    "maxlen": 7000,
+    "point_value": 1.0
+  },
+  "model_info": {
+    "dataset_name": "US500_M1_520weeks",
+    "dataset_dir": "data/US500_M1_520weeks.csv",
+    "date_trained": "20260521",
+    "model_type": "TCN_Multiclass",
+    "model_version": "gvfl_r1f",
+    "task": "multiclass",
+    "class_map": "{0: 'SELL', 1: 'FLAT', 2: 'BUY'}",
+    "seq_len": 256,
+    "class_weights": "[1.3722236116352586, 0.30054311766878283, 1.3272332706959586]",
+    "n_epochs": 30,
+    "best_epoch": 11,
+    "best_val_loss": 0.02569209784269333,
+    "label_profile": "US500_1m_dev_r3",
+    "model_profile": "US500_1m_r2",
+    "loss_profile": "US500_gvfl_r7"
+  },
+  "val_metrics": {
+    "final_f1_sell": 0.4740932642487047,
+    "final_f1_buy": 0.4589131005513258,
+    "final_precision_sell": 0.3470290771175727,
+    "final_precision_buy": 0.40726933830382106,
+    "final_recall_sell": 0.7479564032697548,
+    "final_recall_buy": 0.5255562236921226,
+    "final_profit": -1005.0,
+    "best_f1_sell": 0.4761251999086132,
+    "best_f1_buy": 0.5092443729903537,
+    "best_precision_sell": 0.375909458367017,
+    "best_precision_buy": 0.42343673067454457
+  },
+  "backtest_performance": {
+    "trades": 298,
+    "buy_trades": 172,
+    "sell_trades": 126,
+    "total_pnl": -71.02,
+    "avg_pnl": -0.24,
+    "win_rate": 0.5336,
+    "buy_win_rate": 0.593,
+    "sell_win_rate": 0.4524,
+    "gross_profit": 2588.74,
+    "gross_loss": 2659.76,
+    "profit_factor": 0.9733,
+    "max_win": 20.06,
+    "max_loss": -301.5,
+    "max_consecutive_wins": 8,
+    "max_consecutive_losses": 5
+  }
+}
