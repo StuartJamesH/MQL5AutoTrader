@@ -78,13 +78,50 @@ class DataHandler:
     ----------
     df : pd.DataFrame
         OHLC DataFrame.  A ``'Date'`` column is renamed to ``'Time'``
-        automatically if present.
+        automatically if present.  Required columns: ``Time``, ``Open``,
+        ``High``, ``Low``, ``Close``.  ``Volume`` is optional but expected
+        by :class:`~Strategy.TripleBarrierHiLowMulticlass`.
     """
+
+    _REQUIRED_COLS = {"Open", "High", "Low", "Close"}
 
     def __init__(self, df: pd.DataFrame) -> None:
         self.data: pd.DataFrame = df.rename(columns={'Date': 'Time'}, errors='ignore')
         self.long_position: bool = False
         self.short_position: bool = False
+        # Ensure a Volume column exists so strategies don't raise on missing attribute.
+        if "Volume" not in self.data.columns:
+            self.data["Volume"] = 0
+        missing = self._REQUIRED_COLS - set(self.data.columns)
+        if missing:
+            raise ValueError(f"DataHandler: missing required column(s): {missing}")
+
+    @classmethod
+    def from_csv(
+        cls,
+        path: str,
+        time_col: str = "Time",
+        parse_dates: bool = True,
+    ) -> "DataHandler":
+        """Construct a :class:`DataHandler` from a CSV file.
+
+        Parameters
+        ----------
+        path : str
+            Path to the CSV file.
+        time_col : str, optional
+            Name of the datetime column.  ``'Date'`` is also accepted and is
+            renamed to ``'Time'`` automatically.  Defaults to ``'Time'``.
+        parse_dates : bool, optional
+            When ``True``, attempt to parse the time column as datetime.
+            Defaults to ``True``.
+
+        Returns
+        -------
+        DataHandler
+        """
+        df = pd.read_csv(path, parse_dates=[time_col] if parse_dates else False)
+        return cls(df)
 
     def get_next_bar(self):
         """Yield OHLC bars one at a time as ``itertuples`` namedtuples."""
