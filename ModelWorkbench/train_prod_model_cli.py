@@ -53,7 +53,7 @@ from Learn.Loaders import SequenceDataset
 from Learn.Models import LSTMAttentionSEClassifier, TCNAttentionSEClassifier
 from Learn.Loss import TradeProfitabilityLoss, GatedVolumeFocalLoss
 
-_GATED_MIN_PRECISION = 0.30
+_GATED_MIN_PRECISION = 0.38  # Minimum per-direction precision required to save best gated-PnL checkpoint.
 
 # ---------------------------------------------------------------------------
 # Symbol → dataset CSV and feature function
