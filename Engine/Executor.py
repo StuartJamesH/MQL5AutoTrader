@@ -2,13 +2,16 @@
 Executor module.
 
 Provides :class:`MT5LiveExecutionHandler`, which is responsible for sending
-trade orders to a locally running MetaTrader 5 terminal.
+trade orders to a locally running MetaTrader 5 terminal, and
+:class:`BacktestExecutionHandler`, a pure-Python simulation executor used
+by :class:`~Engine.Backtest_Engine` for stepwise CSV-based backtests.
 
 Supported operations
 --------------------
 * Market (IOC fill-or-kill) order execution.
 * Pending stop-order submission and cancellation.
 * Pending-ticket tracking and fill detection via deal history or open positions.
+* Simulated stop-order fills and SL/TP closures from OHLC bar data (backtest).
 """
 from __future__ import annotations
 
@@ -625,3 +628,481 @@ class MT5LiveExecutionHandler:
                 )
             except Exception as e:
                 _LOG.warning("Error checking position closure for ticket=%d: %s", ticket, e)
+
+
+# ---------------------------------------------------------------------------
+# Backtest execution handler
+# ---------------------------------------------------------------------------
+
+def _bar_to_datetime(bar) -> datetime:
+    """Extract a naive UTC :class:`datetime` from a bar's ``Time`` field."""
+    t = getattr(bar, "Time", None)
+    if t is None:
+        return datetime.utcnow()
+    if hasattr(t, "to_pydatetime"):
+        t = t.to_pydatetime()
+    if isinstance(t, datetime) and t.tzinfo is not None:
+        return t.replace(tzinfo=None)
+    if isinstance(t, datetime):
+        return t
+    return datetime.utcnow()
+
+
+class BacktestExecutionHandler:
+    """Simulated execution handler for CSV-based stepwise backtests.
+
+    Drop-in counterpart to :class:`MT5LiveExecutionHandler` for offline
+    testing.  Requires no MetaTrader 5 connection; all fills and position
+    closures are simulated from OHLC bar data by
+    :class:`~Engine.Backtest_Engine`.
+
+    Fill simulation rules
+    ---------------------
+    * **BUY STOP** @ *entry*: triggered when ``bar.High >= entry``.
+      Fill price = *entry* if ``bar.Open < entry`` else ``bar.Open``
+      (gap-up scenario).
+    * **SELL STOP** @ *entry*: triggered when ``bar.Low <= entry``.
+      Fill price = *entry* if ``bar.Open > entry`` else ``bar.Open``
+      (gap-down scenario).
+
+    Position exit simulation
+    ------------------------
+    * Long SL: ``bar.Low <= sl``  → close at ``min(sl, bar.Open)``
+    * Long TP: ``bar.High >= tp`` → close at ``tp``
+    * Short SL: ``bar.High >= sl`` → close at ``max(sl, bar.Open)``
+    * Short TP: ``bar.Low <= tp``  → close at ``tp``
+    * When both SL and TP are triggered on the same bar, SL takes
+      priority (conservative assumption).
+
+    Parameters
+    ----------
+    point_value : float, optional
+        Default dollar value per 1.0 price-unit move per lot.  Used for
+        P&L calculation and passed back to the strategy via
+        :meth:`get_point_value`.  Defaults to ``1.0``.
+    ticket_book : TicketBook, optional
+        Shared order-state journal.  The same instance must be passed to
+        the strategy so that ``has_pending_order`` / ``has_open_position``
+        queries reflect simulated state.  When omitted a memory-only
+        :class:`~TicketBook.TicketBook` is created automatically.
+    """
+
+    def __init__(
+        self,
+        point_value: float = 1.0,
+        ticket_book: Optional[TicketBook] = None,
+    ) -> None:
+        self._default_point_value = point_value
+        self._point_value_map: dict = {}
+
+        if ticket_book is None:
+            ticket_book = TicketBook(use_memory_only=True)
+        self.ticket_book = ticket_book
+
+        self._next_ticket: int = 1
+        # Internal cache of pending Order objects keyed by ticket id.
+        self._pending_orders: dict = {}
+        # Bar set by Backtest_Engine before each batch call.
+        self._current_bar = None
+
+        # Aggregate statistics updated as positions close.
+        self.total_pnl: float = 0.0
+        self.closed_trades: list = []
+
+        # Progress counters updated by Backtest_Engine each bar.
+        self._bar_idx: int = 0
+        self._bar_total: int = 0
+
+    # ------------------------------------------------------------------
+    # Configuration helpers
+    # ------------------------------------------------------------------
+
+    def set_point_value(self, symbol: str, value: float) -> None:
+        """Override the point value for *symbol* (e.g. ``10.0`` for US500)."""
+        self._point_value_map[symbol] = value
+
+    def get_point_value(self, symbol: str) -> float:
+        """Return the point value for *symbol*, falling back to the default."""
+        return self._point_value_map.get(symbol, self._default_point_value)
+
+    def set_current_bar(self, bar) -> None:
+        """Set the bar used for fill simulation.  Called by :class:`~Engine.Backtest_Engine`."""
+        self._current_bar = bar
+
+    def set_bar_progress(self, current: int, total: int) -> None:
+        """Record the current bar index and total bar count for log annotations.
+
+        Called by :class:`~Engine.Backtest_Engine` at the start of each bar
+        so that ticket log lines include ``(candle X of Y)`` context.
+
+        Parameters
+        ----------
+        current : int
+            1-based index of the bar currently being processed.
+        total : int
+            Total number of bars in the dataset.
+        """
+        self._bar_idx = current
+        self._bar_total = total
+
+    def _progress_tag(self) -> str:
+        """Return a ``' (candle X of Y)'`` suffix, or ``''`` if totals are unset."""
+        if self._bar_total > 0:
+            return f" (candle {self._bar_idx} of {self._bar_total})"
+        return ""
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _alloc_ticket(self) -> int:
+        ticket = self._next_ticket
+        self._next_ticket += 1
+        return ticket
+
+    # ------------------------------------------------------------------
+    # Public API (mirrors MT5LiveExecutionHandler)
+    # ------------------------------------------------------------------
+
+    def execute_market_order(self, order: Order) -> Order:
+        """Simulate an immediate market fill at the current bar's open price.
+
+        Parameters
+        ----------
+        order : Order
+            Template order.  The *entry* field is ignored; fill price is
+            taken from ``bar.Open``.
+
+        Returns
+        -------
+        Order
+            A new :class:`~DataHandler.Order` with ``entry`` set to the
+            simulated fill price.
+        """
+        bar = self._current_bar
+        fill_price = float(bar.Open) if bar is not None else (order.entry or 0.0)
+        fill_time = _bar_to_datetime(bar) if bar is not None else datetime.utcnow()
+
+        ticket = self._alloc_ticket()
+        self.ticket_book.record_order(
+            ticket=ticket,
+            symbol=order.symbol,
+            side=order.side,
+            qty=float(order.qty),
+            entry_price=order.entry or fill_price,
+            sl=order.sl or 0.0,
+            tp=order.tp or 0.0,
+            submission_time=fill_time,
+            expiration_time=None,
+            strategy_name="",
+            status=OrderStatus.FILLED,
+        )
+        self.ticket_book.record_fill(ticket=ticket, fill_price=fill_price, fill_time=fill_time)
+
+        _LOG.info(
+            "Backtest market fill: ticket=%d %s %s @ %.5f%s",
+            ticket, order.symbol, order.side, fill_price, self._progress_tag(),
+        )
+        return Order(
+            symbol=order.symbol,
+            side=order.side,
+            qty=order.qty,
+            entry_time=fill_time.isoformat(),
+            entry=fill_price,
+            expiration=None,
+            sl=order.sl,
+            tp=order.tp,
+        )
+
+    def submit_stop_order(self, order: Order) -> int:
+        """Register a pending stop order for bar-by-bar fill simulation.
+
+        Parameters
+        ----------
+        order : Order
+            Stop order with *entry* set to the stop trigger price and
+            *expiration* set to the bar-time cutoff.
+
+        Returns
+        -------
+        int
+            Simulated ticket number.
+        """
+        ticket = self._alloc_ticket()
+        self._pending_orders[ticket] = order
+
+        submit_time = (
+            _bar_to_datetime(self._current_bar)
+            if self._current_bar is not None
+            else datetime.utcnow()
+        )
+
+        self.ticket_book.record_order(
+            ticket=ticket,
+            symbol=order.symbol,
+            side=order.side,
+            qty=float(order.qty),
+            entry_price=order.entry,
+            sl=order.sl or 0.0,
+            tp=order.tp or 0.0,
+            submission_time=submit_time,
+            expiration_time=order.expiration,
+            strategy_name="",
+        )
+
+        _LOG.info(
+            "Backtest stop order submitted: ticket=%d %s %s @ %.5f%s",
+            ticket, order.symbol, order.side, order.entry, self._progress_tag(),
+        )
+        return ticket
+
+    def process_pending_batch(
+        self,
+        bar_time: Optional[datetime] = None,
+        current_bar=None,
+    ) -> None:
+        """Expire stale pending orders and simulate stop fills for the current bar.
+
+        Should be called once per bar **after** new orders have been
+        submitted for that bar, matching the live-engine call pattern.
+
+        Parameters
+        ----------
+        bar_time : datetime, optional
+            Bar-close timestamp used for expiry evaluation.  Defaults to
+            ``datetime.utcnow()``.
+        current_bar : bar namedtuple, optional
+            OHLC bar used for fill-price simulation.  Falls back to the
+            bar set via :meth:`set_current_bar` if not provided.
+        """
+        if current_bar is not None:
+            self._current_bar = current_bar
+
+        if bar_time is None:
+            bar_time = datetime.utcnow()
+
+        # --- Pass 1: simulate fills from bar High / Low ---
+        # Fills are checked BEFORE expiry so that an order whose expiration
+        # timestamp equals the current bar time is still eligible to fill on
+        # that bar (e.g. patience=1 on M1 data: order expires at bar N+1 but
+        # should fill if bar N+1's price action reaches the stop level).
+        bar = self._current_bar
+        if bar is not None:
+            bar_open = float(bar.Open)
+            bar_high = float(bar.High)
+            bar_low  = float(bar.Low)
+
+            for record in list(self.ticket_book.get_active_pending_orders()):
+                ticket = record.ticket
+                if ticket not in self._pending_orders:
+                    continue
+
+                entry = record.entry_price
+                side  = record.side.lower()
+                filled = False
+                fill_price = 0.0
+
+                if side == "buy":
+                    # BUY STOP: triggered when the bar's High reaches the stop price.
+                    if bar_high >= entry:
+                        # If the bar opened above the entry (gap up), fill at open.
+                        fill_price = bar_open if bar_open >= entry else entry
+                        filled = True
+                elif side == "sell":
+                    # SELL STOP: triggered when the bar's Low reaches the stop price.
+                    if bar_low <= entry:
+                        # If the bar opened below the entry (gap down), fill at open.
+                        fill_price = bar_open if bar_open <= entry else entry
+                        filled = True
+
+                if filled:
+                    fill_time = _bar_to_datetime(bar)
+                    self.ticket_book.record_fill(
+                        ticket=ticket, fill_price=fill_price, fill_time=fill_time
+                    )
+                    self._pending_orders.pop(ticket, None)
+                    _LOG.info(
+                        "Backtest fill: ticket=%d %s %s entry=%.5f fill=%.5f%s",
+                        ticket, record.symbol, side, entry, fill_price, self._progress_tag(),
+                    )
+
+        # --- Pass 2: expire orders whose deadline has elapsed ---
+        # Only orders that were NOT filled in Pass 1 will still be in
+        # _active_pending (record_fill removes them), so no double-processing.
+        for ticket in self.ticket_book.get_expired_orders(bar_time):
+            order = self._pending_orders.get(ticket)
+            self.ticket_book.record_cancellation(ticket, reason="expired")
+            self._pending_orders.pop(ticket, None)
+            _LOG.info(
+                "Backtest cancelled (expired): ticket=%d %s %s @ %.5f%s",
+                ticket,
+                order.symbol if order else "?",
+                order.side if order else "?",
+                order.entry if order else 0.0,
+                self._progress_tag(),
+            )
+
+    def process_position_updates_batch(
+        self,
+        bar_time: Optional[datetime] = None,
+        current_bar=None,
+    ) -> None:
+        """Simulate SL/TP closures for all currently open positions.
+
+        Should be called once per bar **after** :meth:`process_pending_batch`,
+        matching the live-engine call pattern.
+
+        Parameters
+        ----------
+        bar_time : datetime, optional
+            Bar-close timestamp recorded against any closed position.
+            Defaults to ``datetime.utcnow()``.
+        current_bar : bar namedtuple, optional
+            OHLC bar used to check SL/TP trigger levels.  Falls back to
+            the bar set via :meth:`set_current_bar` if not provided.
+        """
+        if current_bar is not None:
+            self._current_bar = current_bar
+
+        if bar_time is None:
+            bar_time = datetime.utcnow()
+
+        bar = self._current_bar
+        if bar is None:
+            return
+
+        bar_open = float(bar.Open)
+        bar_high = float(bar.High)
+        bar_low  = float(bar.Low)
+
+        for record in list(self.ticket_book.get_open_positions()):
+            ticket     = record.ticket
+            side       = record.side.lower()
+            sl         = record.sl or 0.0
+            tp         = record.tp or 0.0
+            fill_price = (
+                record.fill_price
+                if record.fill_price is not None
+                else record.entry_price
+            )
+
+            close_price: Optional[float] = None
+            close_reason: str = ""
+
+            if side == "buy":
+                sl_hit = sl > 0 and bar_low <= sl
+                tp_hit = tp > 0 and bar_high >= tp
+                if sl_hit:
+                    close_price  = min(sl, bar_open)
+                    close_reason = "sl"
+                elif tp_hit:
+                    close_price  = tp
+                    close_reason = "tp"
+
+            elif side == "sell":
+                sl_hit = sl > 0 and bar_high >= sl
+                tp_hit = tp > 0 and bar_low <= tp
+                if sl_hit:
+                    close_price  = max(sl, bar_open)
+                    close_reason = "sl"
+                elif tp_hit:
+                    close_price  = tp
+                    close_reason = "tp"
+
+            if close_price is None:
+                continue
+
+            point_value = self.get_point_value(record.symbol)
+            pnl = (
+                (close_price - fill_price) * record.qty * point_value
+                if side == "buy"
+                else (fill_price - close_price) * record.qty * point_value
+            )
+
+            self.ticket_book.record_close(
+                ticket=ticket,
+                close_price=close_price,
+                close_time=bar_time,
+                pnl=pnl,
+            )
+            self.total_pnl += pnl
+
+            closed_record = self.ticket_book.get_order(ticket)
+            if closed_record is not None:
+                self.closed_trades.append(closed_record)
+
+            _LOG.info(
+                "Backtest close (%s): ticket=%d %s %s fill=%.5f close=%.5f pnl=%.2f%s",
+                close_reason, ticket, record.symbol, side,
+                fill_price, close_price, pnl, self._progress_tag(),
+            )
+
+    # ------------------------------------------------------------------
+    # Reporting helpers
+    # ------------------------------------------------------------------
+
+    def get_trade_summary(self) -> dict:
+        """Return a performance summary over all closed trades.
+
+        Returns
+        -------
+        dict
+            Includes overall and side-split counts, P&L statistics, profit
+            factor, per-trade extremes, and consecutive win/loss streaks.
+        """
+        n = len(self.closed_trades)
+        _zero: dict = {
+            "trades": 0, "buy_trades": 0, "sell_trades": 0,
+            "total_pnl": 0.0, "avg_pnl": 0.0,
+            "win_rate": 0.0, "buy_win_rate": 0.0, "sell_win_rate": 0.0,
+            "gross_profit": 0.0, "gross_loss": 0.0, "profit_factor": 0.0,
+            "max_win": 0.0, "max_loss": 0.0,
+            "max_consecutive_wins": 0, "max_consecutive_losses": 0,
+        }
+        if n == 0:
+            return _zero
+
+        buys  = [t for t in self.closed_trades if t.side.lower() == "buy"]
+        sells = [t for t in self.closed_trades if t.side.lower() == "sell"]
+
+        pnls        = [(t.pnl or 0.0) for t in self.closed_trades]
+        buy_pnls    = [(t.pnl or 0.0) for t in buys]
+        sell_pnls   = [(t.pnl or 0.0) for t in sells]
+
+        total_wins  = sum(1 for p in pnls     if p > 0)
+        buy_wins    = sum(1 for p in buy_pnls  if p > 0)
+        sell_wins   = sum(1 for p in sell_pnls if p > 0)
+
+        gross_profit = sum(p for p in pnls if p > 0)
+        gross_loss   = abs(sum(p for p in pnls if p < 0))
+
+        # Consecutive win/loss streaks
+        max_cons_wins = max_cons_losses = 0
+        cur_wins = cur_losses = 0
+        for p in pnls:
+            if p > 0:
+                cur_wins += 1
+                cur_losses = 0
+                max_cons_wins = max(max_cons_wins, cur_wins)
+            else:
+                cur_losses += 1
+                cur_wins = 0
+                max_cons_losses = max(max_cons_losses, cur_losses)
+
+        return {
+            "trades":               n,
+            "buy_trades":           len(buys),
+            "sell_trades":          len(sells),
+            "total_pnl":            round(self.total_pnl, 2),
+            "avg_pnl":              round(self.total_pnl / n, 2),
+            "win_rate":             round(total_wins / n, 4),
+            "buy_win_rate":         round(buy_wins / len(buys),   4) if buys  else 0.0,
+            "sell_win_rate":        round(sell_wins / len(sells), 4) if sells else 0.0,
+            "gross_profit":         round(gross_profit, 2),
+            "gross_loss":           round(gross_loss, 2),
+            "profit_factor":        round(gross_profit / gross_loss, 4) if gross_loss > 0 else 0.0,
+            "max_win":              round(max(pnls), 2),
+            "max_loss":             round(min(pnls), 2),
+            "max_consecutive_wins": max_cons_wins,
+            "max_consecutive_losses": max_cons_losses,
+        }
