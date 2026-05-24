@@ -852,6 +852,8 @@ class GatedVolumeFocalLoss(nn.Module):
         # Precision reward band (optional — fires above prec_floor up to prec_target)
         prec_target: float = None,
         prec_reward_weight: float = 0.0,
+        prec_sell_reward_weight: float = None,
+        prec_buy_reward_weight: float = None,
         # Recall hinge (unchanged from TradeProfitabilityLoss)
         recall_floor: float = 0.05,
         rec_floor_weight: float = 15.0,
@@ -891,6 +893,8 @@ class GatedVolumeFocalLoss(nn.Module):
         self.prec_floor_weight  = float(prec_floor_weight)
         self.prec_target        = float(prec_target) if prec_target is not None else None
         self.prec_reward_weight = float(prec_reward_weight)
+        self.prec_sell_rw       = float(prec_sell_reward_weight) if prec_sell_reward_weight is not None else self.prec_reward_weight
+        self.prec_buy_rw        = float(prec_buy_reward_weight)  if prec_buy_reward_weight  is not None else self.prec_reward_weight
         self.recall_floor      = float(recall_floor)
         self.rec_floor_weight  = float(rec_floor_weight)
         self.eps               = float(eps)
@@ -935,7 +939,7 @@ class GatedVolumeFocalLoss(nn.Module):
             _band         = self.prec_target - self.prec_floor       # width of reward band
             reward_s      = (sp_sell - self.prec_floor).clamp(0.0, _band)
             reward_b      = (sp_buy  - self.prec_floor).clamp(0.0, _band)
-            L_prec_reward = -self.prec_reward_weight * (reward_s + reward_b)
+            L_prec_reward = -(self.prec_sell_rw * reward_s + self.prec_buy_rw * reward_b)
         else:
             L_prec_reward = sp_sell.new_zeros(())
         L_prec = L_prec_guard + L_prec_reward
