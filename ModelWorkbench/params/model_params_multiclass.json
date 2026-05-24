@@ -82,7 +82,7 @@
       "weight_decay": 0.007
     },
     "US500_1m_r6": {
-      "_comment": "From LSTM/US500_1m_r4. TWO REGULARISATION CHANGES targeting severe overfitting in r4+r15 run (gap reached +3.10 at ep15, gnorm climbed 58→245 with no plateau). (1) weight_decay 0.005→0.008: gap widened +0.28/epoch from ep3-15 on 1.5M rows. TCN/US500_1m_r2 uses wd=0.008 on 3M rows and showed gap RECOVERY at ep6→ep7 (+1.59→+1.24); wd=0.005 confirmed insufficient. (2) lr 2.5e-5→2.0e-5: gnorm at ep15=245 (×4.2 over ep0=58); lower lr reduces effective gradient magnitude at late epochs. Expected: best_epoch shifts to 10-16, gap stays below +2.0 through ep15, gnorm growth rate slows to <10/epoch after ep5. Pair with loss-profile US500_1m_r16.",
+      "_comment": "From LSTM/US500_1m_r4. TWO REGULARISATION CHANGES targeting severe overfitting in r4+r15 run (gap reached +3.10 at ep15, gnorm climbed 58→245 with no plateau). (1) weight_decay 0.005→0.008: gap widened +0.28/epoch from ep3-15 on 1.5M rows. TCN/US500_1m_r2 uses wd=0.008 on 3M rows and showed gap RECOVERY at ep6→ep7 (+1.59→+1.24); wd=0.005 confirmed insufficient. (2) lr 2.5e-5→2.0e-5: gnorm at ep15=245 (×4.2 over ep0=58); lower lr reduces effective gradient magnitude at late epochs. Expected: best_epoch shifts to 10-16, gap stays below +2.0 through ep15, gnorm growth rate slows to <10/epoch after ep5. Pair with loss-profile US500_1m_r16. | gvfl_c (gvfl_r9 lr=2e-5 wd=0.008): best_gated_pnl=146 ep17 ppt=0.092 - wd=0.008 insufficient at prec_reward_weight=1.50 (gap=+0.164 at ep17). See US500_1m_r7.",
       "hidden_dim": 256,
       "num_layers": 3,
       "bidirectional": true,
@@ -96,6 +96,38 @@
       "batch_size": 512,
       "lr": 2e-05,
       "weight_decay": 0.008
+    },
+    "US500_1m_r7": {
+      "_comment": "From LSTM/US500_1m_r6. weight_decay 0.008->0.016: gvfl_c (r6+r9) hit gap=+0.164 at best_gated ep17, indicating wd=0.008 too weak for prec_reward_weight=1.50. Doubling wd targets gap peak <=+0.10 and shifts best_gated epoch earlier. All other params unchanged. Pair with US500_gvfl_r10 + lr=2e-5, patience=20, epochs=60 (lstm_gvfl_d).",
+      "hidden_dim": 256,
+      "num_layers": 3,
+      "bidirectional": true,
+      "dropout": 0.2,
+      "dropout_out": 0.55,
+      "attn_heads": 8,
+      "attn_dropout": 0.08,
+      "se_context_window": 64,
+      "use_learned_query": true,
+      "seq_len": 256,
+      "batch_size": 512,
+      "lr": 2e-05,
+      "weight_decay": 0.016
+    },
+    "US500_1m_r8": {
+      "_comment": "From LSTM/US500_1m_r6. seq_len 256->512 (4.3h->8.5h): full US session context for session-level SELL setups (NY open fades, 2:30pm reversals, pre-close exhaustion). batch_size 512->256 to accommodate longer sequences. weight_decay 0.008->0.012 (moderate increase for added context capacity). Pair with US500_gvfl_r10 + lr=2e-5, patience=15, epochs=40 (lstm_gvfl_f).",
+      "hidden_dim": 256,
+      "num_layers": 3,
+      "bidirectional": true,
+      "dropout": 0.2,
+      "dropout_out": 0.55,
+      "attn_heads": 8,
+      "attn_dropout": 0.08,
+      "se_context_window": 64,
+      "use_learned_query": true,
+      "seq_len": 512,
+      "batch_size": 256,
+      "lr": 2e-05,
+      "weight_decay": 0.012
     },
     "EURUSD_1m_dev": {
       "_comment": "EURUSD 1m dev profile.Tuned over R6-R10: reduced hidden_dim, stronger dropout, wider SE context. R10: best_ep=6 val_loss=4.884 prec_S=0.398 prec_B=0.370 ppt=0.053 (best_val_ep) / ppt=0.175 (best_pnl_ep=10) — TV gap hit 1.477 by ep13; dropout_out 0.55 insufficient.",
@@ -308,7 +340,7 @@
       "weight_decay": 0.005
     },
     "US500_1m_r2": {
-      "_comment": "From TCN/US500_1m_r1. TWO REGULARISATION CHANGES to address overfitting onset at ep8-9 (train/val gap +1.65 at ep11 with only 12 epochs complete). (1) weight_decay 0.005->0.008: gap grew at +0.98/epoch rate from ep8-11; stronger L2 needed — same direction that contained gap in LSTM runs. (2) lr 5e-05->3.5e-05: gnorm grew 28.8->131.7 over 12 epochs (+357%); lower LR reduces per-step logit magnitude growth and should flatten the gnorm trajectory toward r1's plateau at ~43. (3) dropout_out 0.45->0.50: moderate head regularisation complement to L2. Expected: best_epoch shifts from 8 to 14-18, train/val gap stays below +0.50 through ep15, gnorm plateaus below 100 by ep20. Pair with loss-profile US500_1m_r15. | R2-interrupted (3M rows, interrupted ep7/30, loss=r15): best_ep=7 val_loss=6.83 prec_S=0.364 prec_B=0.450 gated_ppt=0.246 gated_pnl=15 — INTERRUPTED at ep7/30. gnorm 32→130 still rising (no plateau). prec_S below 0.40 floor but model not converged. gap improving ep6→ep7 (+1.59→+1.24) suggesting wd=0.008 starting to contain overfitting. Needs full 30-epoch run.",
+      "_comment": "From TCN/US500_1m_r1. TWO REGULARISATION CHANGES to address overfitting onset at ep8-9 (train/val gap +1.65 at ep11 with only 12 epochs complete). (1) weight_decay 0.005->0.008: gap grew at +0.98/epoch rate from ep8-11; stronger L2 needed — same direction that contained gap in LSTM runs. (2) lr 5e-05->3.5e-05: gnorm grew 28.8->131.7 over 12 epochs (+357%); lower LR reduces per-step logit magnitude growth and should flatten the gnorm trajectory toward r1's plateau at ~43. (3) dropout_out 0.45->0.50: moderate head regularisation complement to L2. Expected: best_epoch shifts from 8 to 14-18, train/val gap stays below +0.50 through ep15, gnorm plateaus below 100 by ep20. Pair with loss-profile US500_1m_r15. | R2-interrupted (3M rows, interrupted ep7/30, loss=r15): best_ep=7 val_loss=6.83 prec_S=0.364 prec_B=0.450 gated_ppt=0.246 gated_pnl=15 — INTERRUPTED at ep7/30. gnorm 32→130 still rising (no plateau). prec_S below 0.40 floor but model not converged. gap improving ep6→ep7 (+1.59→+1.24) suggesting wd=0.008 starting to contain overfitting. Needs full 30-epoch run. R3: with loss=US500_gvfl_r7 and label=US500_1m_dev_r2, best_val_ep=14 val_loss=0.0267; best_gated_ep=7 gated_pnl=119 gated_ppt=0.077 prec_S=0.386 prec_B=0.396 — first valid deployable checkpoint from r7, but still below 0.10 gated_ppt target.",
       "hidden_channels": 256,
       "num_layers": 6,
       "kernel_size": 3,
@@ -321,6 +353,22 @@
       "seq_len": 256,
       "batch_size": 512,
       "lr": 3.5e-05,
+      "weight_decay": 0.008
+    },
+    "US500_1m_r4": {
+      "_comment": "From TCN/US500_1m_r2. Precision-focused regularisation pass for GVFL. Raised dropout_out 0.50->0.55 because the latest r7+label_r2 run only cleared the dual precision floor once (ep7 prec_S=0.386 prec_B=0.396) before precision slipped back below threshold. Lowered lr 3.5e-5->3.0e-5 to slow the early precision peak and give the stronger loss reward band more time to shape the boundary. Kept weight_decay at 0.008 because the older TCN/US500_1m_r3 profile (wd=0.012) proved over-regularised.",
+      "hidden_channels": 256,
+      "num_layers": 6,
+      "kernel_size": 3,
+      "dropout": 0.2,
+      "dropout_out": 0.55,
+      "attn_heads": 8,
+      "attn_dropout": 0.1,
+      "use_learned_query": true,
+      "se_context_window": 64,
+      "seq_len": 256,
+      "batch_size": 512,
+      "lr": 3e-05,
       "weight_decay": 0.008
     },
     "US500_1m_r3": {

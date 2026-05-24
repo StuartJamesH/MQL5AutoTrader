@@ -45,6 +45,52 @@
       "skip_range": true
     }
   },
+  "US500_1m_dev_r3": {
+    "_comment": "From US500_1m_dev_r2. Lowered trend_pullback_thresh 0.85->0.70 because exact 750k-bar capped-horizon replay increased final BUY+SELL label density 5.43%->6.18% (+13.9%) and candidate density 14.61%->16.50% (+12.9%) while hit rate improved 37.16%->37.48%. Goal: reduce precision ceiling by reclassifying shallow-but-profitable trend continuations as positives.",
+    "regime_params": {
+      "ma_period": 60,
+      "slope_smoothness": 50,
+      "regime_min_duration": 0,
+      "atr_window": 60,
+      "atr_lookback": 720,
+      "atr_percentile": 0.0,
+      "slope_threshold": 5e-06
+    },
+    "label_params": {
+      "z_window": 14,
+      "z_thresh": 1,
+      "z_limit": 5,
+      "atr_window": 14,
+      "tp_mult": 2.5,
+      "sl_mult": 2.5,
+      "max_horizon": 90,
+      "trend_pullback_thresh": 0.70,
+      "skip_range": true
+    }
+  },
+  "US500_1m_dev_r4": {
+    "_comment": "From US500_1m_dev_r2. Lowered trend_pullback_thresh 0.85->0.50 as an aggressive label-density experiment. Exact 750k-bar capped-horizon replay increased final BUY+SELL label density 5.43%->7.17% (+32.1%) and candidate density 14.61%->18.98% (+29.9%) with hit rate 37.16%->37.80%. Use only if r3 remains label-bound.",
+    "regime_params": {
+      "ma_period": 60,
+      "slope_smoothness": 50,
+      "regime_min_duration": 0,
+      "atr_window": 60,
+      "atr_lookback": 720,
+      "atr_percentile": 0.0,
+      "slope_threshold": 5e-06
+    },
+    "label_params": {
+      "z_window": 14,
+      "z_thresh": 1,
+      "z_limit": 5,
+      "atr_window": 14,
+      "tp_mult": 2.5,
+      "sl_mult": 2.5,
+      "max_horizon": 90,
+      "trend_pullback_thresh": 0.50,
+      "skip_range": true
+    }
+  },
   "XAUUSD_1m_dev": {
     "regime_params": {
       "ma_period": 60,
