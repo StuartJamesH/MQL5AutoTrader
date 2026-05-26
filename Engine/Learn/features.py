@@ -1268,6 +1268,132 @@ def add_price_features(df: pd.DataFrame, regime_params=None) -> pd.DataFrame:
 
     return df 
 
+
+def _add_features_light(df: pd.DataFrame, include_mtf: bool = False, regime_params: dict = None) -> pd.DataFrame:
+    """
+    Lightweight causal feature set for fast signal-learnability experiments.
+
+    Includes only:
+      - returns
+      - rolling z-scores
+      - ATR / volatility
+      - momentum
+      - volume anomalies
+      - candle structure
+      - moving-average distances
+      - regime indicators
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', pd.errors.PerformanceWarning)
+        df = add_feature_library(df, include_mtf=include_mtf, regime_params=regime_params)
+
+    df = df.copy()
+    _keep = [
+        c for c in [
+            # Returns
+            'fl_log_return',
+            'fl_ret_1',
+            'fl_ret_3',
+            'fl_ret_5',
+            'fl_ret_10',
+            'fl_ret_20',
+            'fl_ret_60',
+            'fl_ret_lag_1',
+            'fl_ret_lag_2',
+            'fl_ret_lag_3',
+            # Rolling z-scores
+            'fl_z_20',
+            'fl_z_60',
+            'fl_z_128',
+            'fl_z_256',
+            # ATR / volatility
+            'fl_atr14_pct',
+            'fl_atr28_pct',
+            'fl_atr_ratio_14',
+            'fl_rv_5',
+            'fl_rv_10',
+            'fl_rv_20',
+            'fl_rv_60',
+            'fl_rv_ratio_5_20',
+            'fl_rv_ratio_20_60',
+            'fl_parkinson_20',
+            'fl_gk_vol_20',
+            'fl_yz_vol_20',
+            'fl_bb_width_20',
+            'fl_hl_range_atr',
+            'fl_gap_open_atr',
+            # Momentum
+            'fl_momentum_vote',
+            'fl_roc_5',
+            'fl_roc_10',
+            'fl_roc_20',
+            'fl_rsi_14',
+            'fl_rsi14_slope_3',
+            'fl_stoch_k',
+            'fl_stoch_d',
+            'fl_stoch_kd_diff',
+            'fl_macd_hist_norm',
+            'fl_macd_hist_slope_5',
+            'fl_adx14',
+            'fl_di_plus',
+            'fl_di_minus',
+            'fl_di_diff',
+            # Volume anomalies
+            'fl_log_volume',
+            'fl_volume_z',
+            'fl_vol_direction',
+            'fl_nvi_z',
+            'fl_obv_slope_10',
+            'fl_force_index_13',
+            'fl_cmf_20',
+            # Candle structure
+            'fl_hl_range',
+            'fl_body',
+            'fl_upper_wick',
+            'fl_lower_wick',
+            'fl_body_to_range',
+            'fl_close_loc',
+            'fl_O_rel',
+            'fl_H_rel',
+            'fl_L_rel',
+            'fl_inside_bar',
+            'fl_outside_bar',
+            'fl_range_expand',
+            'fl_range_contract',
+            'fl_range_vs_atr5',
+            # Moving-average distances
+            'fl_close_vs_ema8',
+            'fl_close_vs_ema13',
+            'fl_close_vs_ema21',
+            'fl_close_vs_ema50',
+            'fl_close_vs_ema200',
+            'fl_ema8_21_diff',
+            'fl_ema21_50_diff',
+            'fl_ema50_200_diff',
+            'fl_ema_vote',
+            'fl_hma20_vs_ema21',
+            'fl_dema14_vs_close',
+            'fl_tema14_vs_close',
+            # Regime indicators
+            'fl_regime',
+            'fl_donchian_trend_5',
+            'fl_donchian_trend_20',
+            'fl_donchian_trend_60',
+            'fl_time_in_trend_5',
+            'fl_time_in_trend_20',
+            'fl_time_in_trend_60',
+            'fl_session_tokyo',
+            'fl_session_london',
+            'fl_session_ny',
+            'fl_session_overlap',
+        ]
+        if c in df.columns
+    ]
+    _ohlcv = [c for c in ['Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'target', 'sell_y', 'buy_y']
+              if c in df.columns]
+    _final = _ohlcv + [c for c in _keep if c not in _ohlcv]
+    return df[_final]
+
 def _add_features_EURUSD(df: pd.DataFrame, include_mtf: bool = False, regime_params: dict = None) -> pd.DataFrame:
     """
     Add the features selected for EURUSD by the Feature ML Lab.
