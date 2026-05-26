@@ -82,7 +82,7 @@
       "weight_decay": 0.007
     },
     "US500_1m_r6": {
-      "_comment": "From LSTM/US500_1m_r4. TWO REGULARISATION CHANGES targeting severe overfitting in r4+r15 run (gap reached +3.10 at ep15, gnorm climbed 58→245 with no plateau). (1) weight_decay 0.005→0.008: gap widened +0.28/epoch from ep3-15 on 1.5M rows. TCN/US500_1m_r2 uses wd=0.008 on 3M rows and showed gap RECOVERY at ep6→ep7 (+1.59→+1.24); wd=0.005 confirmed insufficient. (2) lr 2.5e-5→2.0e-5: gnorm at ep15=245 (×4.2 over ep0=58); lower lr reduces effective gradient magnitude at late epochs. Expected: best_epoch shifts to 10-16, gap stays below +2.0 through ep15, gnorm growth rate slows to <10/epoch after ep5. Pair with loss-profile US500_1m_r16. | gvfl_c (gvfl_r9 lr=2e-5 wd=0.008): best_gated_pnl=146 ep17 ppt=0.092 - wd=0.008 insufficient at prec_reward_weight=1.50 (gap=+0.164 at ep17). See US500_1m_r7.",
+      "_comment": "From LSTM/US500_1m_r4. TWO REGULARISATION CHANGES targeting severe overfitting in r4+r15 run (gap reached +3.10 at ep15, gnorm climbed 58→245 with no plateau). (1) weight_decay 0.005→0.008: gap widened +0.28/epoch from ep3-15 on 1.5M rows. TCN/US500_1m_r2 uses wd=0.008 on 3M rows and showed gap RECOVERY at ep6→ep7 (+1.59→+1.24); wd=0.005 confirmed insufficient. (2) lr 2.5e-5→2.0e-5: gnorm at ep15=245 (×4.2 over ep0=58); lower lr reduces effective gradient magnitude at late epochs. Expected: best_epoch shifts to 10-16, gap stays below +2.0 through ep15, gnorm growth rate slows to <10/epoch after ep5. Pair with loss-profile US500_1m_r16. | gvfl_c (gvfl_r9 lr=2e-5 wd=0.008): best_gated_pnl=158 ep19 ppt=0.100 - wd=0.008 insufficient at prec_reward_weight=1.50 (gap=+0.164 at ep17). See US500_1m_r7.",
       "hidden_dim": 256,
       "num_layers": 3,
       "bidirectional": true,
@@ -98,7 +98,7 @@
       "weight_decay": 0.008
     },
     "US500_1m_r7": {
-      "_comment": "From LSTM/US500_1m_r6. weight_decay 0.008->0.016: gvfl_c (r6+r9) hit gap=+0.164 at best_gated ep17, indicating wd=0.008 too weak for prec_reward_weight=1.50. Doubling wd targets gap peak <=+0.10 and shifts best_gated epoch earlier. All other params unchanged. Pair with US500_gvfl_r10 + lr=2e-5, patience=20, epochs=60 (lstm_gvfl_d).",
+      "_comment": "From LSTM/US500_1m_r6. weight_decay 0.008->0.016: gvfl_c (r6+r9) hit gap=+0.164 at best_gated ep17, indicating wd=0.008 too weak for prec_reward_weight=1.50. Doubling wd targets gap peak <=+0.10 and shifts best_gated epoch earlier. All other params unchanged. Pair with US500_gvfl_r10 + lr=2e-5, patience=20, epochs=60 (lstm_gvfl_d). | lstm_gvfl_d (gvfl_r10, interrupted ep17): best_gated=108 ep7 ppt=0.062; best_val ep2 val_loss=-0.148 — wd=0.016 too aggressive, model stalled after ep2. lstm_gvfl_e (gvfl_r11, interrupted ep15): best_gated=78 ep6 ppt=0.052 — same pattern. NOT recommended for GVFL runs; revert to r6 (wd=0.008).",
       "hidden_dim": 256,
       "num_layers": 3,
       "bidirectional": true,
@@ -356,7 +356,7 @@
       "weight_decay": 0.008
     },
     "US500_1m_r4": {
-      "_comment": "From TCN/US500_1m_r2. Precision-focused regularisation pass for GVFL. Raised dropout_out 0.50->0.55 because the latest r7+label_r2 run only cleared the dual precision floor once (ep7 prec_S=0.386 prec_B=0.396) before precision slipped back below threshold. Lowered lr 3.5e-5->3.0e-5 to slow the early precision peak and give the stronger loss reward band more time to shape the boundary. Kept weight_decay at 0.008 because the older TCN/US500_1m_r3 profile (wd=0.012) proved over-regularised.",
+      "_comment": "From TCN/US500_1m_r2. Precision-focused regularisation pass for GVFL. Raised dropout_out 0.50->0.55 because the latest r7+label_r2 run only cleared the dual precision floor once (ep7 prec_S=0.386 prec_B=0.396) before precision slipped back below threshold. Lowered lr 3.5e-5->3.0e-5 to slow the early precision peak and give the stronger loss reward band more time to shape the boundary. Kept weight_decay at 0.008 because the older TCN/US500_1m_r3 profile (wd=0.012) proved over-regularised. | First GVFL run for this profile: pair with US500_gvfl_r12 + label=US500_1m_dev_r3, --n-rows 3000000 --epochs 40 --patience 12.",
       "hidden_channels": 256,
       "num_layers": 6,
       "kernel_size": 3,

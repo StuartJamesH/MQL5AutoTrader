@@ -637,7 +637,7 @@
                           "eps":  1E-06
                       },
     "US500_gvfl_r9":  {
-                          "_comment":  "From US500_gvfl_r7. Two changes targeting prec_sell improvement from avg 0.38 to 0.41+. (1) prec_reward_weight 0.75-\u003e1.50: doubles the precision reward gradient. At gvfl_a operating point soft prec_sell~0.34, reward per direction grows from -0.0075 to -0.015. (2) prec_target 0.40-\u003e0.43: widens reward band from 0.07 to 0.10 units so reward stays active past the gvfl_a hard prec_sell=0.41 ceiling. prec_floor kept at 0.33 (dormant in all gvfl_a epochs). vol_floor=0.065 unchanged (pred_rate 10-13% vs floor 6.5%, hinge never fired). Pair with LSTM/US500_1m_r6 + lr=2e-5, patience=12, epochs=40. | gvfl_c (LSTM+r3 lr=2e-5 wd=0.008): best_val ep7 val_loss=-0.142; best_gated_pnl=158 ep19 ppt=0.100 prec_S=0.388 prec_B=0.420 - ceiling broken (prev 129); gap=+0.183 at ep19 confirms wd=0.008 insufficient. Superseded by r10+US500_1m_r7.",
+                          "_comment":  "From US500_gvfl_r7. Two changes targeting prec_sell improvement from avg 0.38 to 0.41+. (1) prec_reward_weight 0.75-\u003e1.50: doubles the precision reward gradient. At gvfl_a operating point soft prec_sell~0.34, reward per direction grows from -0.0075 to -0.015. (2) prec_target 0.40-\u003e0.43: widens reward band from 0.07 to 0.10 units so reward stays active past the gvfl_a hard prec_sell=0.41 ceiling. prec_floor kept at 0.33 (dormant in all gvfl_a epochs). vol_floor=0.065 unchanged (pred_rate 10-13% vs floor 6.5%, hinge never fired). Pair with LSTM/US500_1m_r6 + lr=2e-5, patience=12, epochs=40. | gvfl_c (LSTM+r3 lr=2e-5 wd=0.008): best_val ep7 val_loss=-0.142; best_gated_pnl=158 ep19 ppt=0.100 prec_S=0.388 prec_B=0.420 - ceiling broken (prev 129); gap=+0.183 at ep19 confirms wd=0.008 insufficient. Superseded by r10+US500_1m_r7. | CORRECTION: NOT superseded. r10+r7 (lstm_gvfl_d, interrupted ep17): best_gated=108 ep7 ppt=0.062 — wd=0.016 over-regularised; gvfl_r9+r6 remains strongest GVFL profile. gvfl_c FINAL: best_gated_pnl=158 ep19 ppt=0.100 prec_S=0.388 prec_B=0.420.",
                           "loss_class":  "GatedVolumeFocalLoss",
                           "gamma":  2.5,
                           "trade_classes":  [
@@ -656,7 +656,7 @@
                           "eps":  1E-06
                       },
     "US500_gvfl_r10":  {
-                          "_comment":  "From US500_gvfl_r9. One change: prec_target 0.43->0.47. Rationale: gvfl_c ep7 shows hard prec_buy=0.455 approaching r9 band ceiling (0.43); widening to 0.47 keeps BUY reward gradient active. SELL also benefits from wider 14pp reward band [0.33, 0.47]. prec_reward_weight=1.50 unchanged. All other params identical to r9. Pair with LSTM/US500_1m_r7 (wd=0.016) + lr=2e-5, patience=20, epochs=60 (lstm_gvfl_d).",
+                          "_comment":  "From US500_gvfl_r9. One change: prec_target 0.43->0.47. Rationale: gvfl_c ep7 shows hard prec_buy=0.455 approaching r9 band ceiling (0.43); widening to 0.47 keeps BUY reward gradient active. SELL also benefits from wider 14pp reward band [0.33, 0.47]. prec_reward_weight=1.50 unchanged. All other params identical to r9. Pair with LSTM/US500_1m_r7 (wd=0.016) + lr=2e-5, patience=20, epochs=60 (lstm_gvfl_d). | lstm_gvfl_d result (LSTM r7+r10, interrupted ep17): best_val ep2 val_loss=-0.148; best_gated=108 ep7 ppt=0.062 prec_S=0.393 prec_B=0.432 — wd=0.016 over-regularised, val_loss stalled after ep2; run contaminated. Needs clean re-run with wd=0.008.",
                           "loss_class":  "GatedVolumeFocalLoss",
                           "gamma":  2.5,
                           "trade_classes":  [
@@ -675,7 +675,7 @@
                           "eps":  1E-06
                       },
     "US500_gvfl_r11":  {
-                          "_comment":  "From US500_gvfl_r10. Adds asymmetric per-direction precision reward: prec_sell_reward_weight=3.0 vs prec_buy_reward_weight=1.50. Rationale: prec_sell stuck at 0.364-0.399 across all gvfl runs (bullish val period structural headwind). 2x stronger SELL gradient targets prec_sell >= 0.42, raising SELL gated contribution from 22% toward 35%. prec_reward_weight=1.50 retained as fallback default; explicit per-direction keys override it. Requires GatedVolumeFocalLoss prec_sell_reward_weight/prec_buy_reward_weight params (Loss.py updated). Pair with LSTM/US500_1m_r7 + lr=2e-5, patience=20, epochs=60 (lstm_gvfl_e).",
+                          "_comment":  "From US500_gvfl_r10. Adds asymmetric per-direction precision reward: prec_sell_reward_weight=3.0 vs prec_buy_reward_weight=1.50. Rationale: prec_sell stuck at 0.364-0.399 across all gvfl runs (bullish val period structural headwind). 2x stronger SELL gradient targets prec_sell >= 0.42, raising SELL gated contribution from 22% toward 35%. prec_reward_weight=1.50 retained as fallback default; explicit per-direction keys override it. Requires GatedVolumeFocalLoss prec_sell_reward_weight/prec_buy_reward_weight params (Loss.py updated). Pair with LSTM/US500_1m_r7 + lr=2e-5, patience=20, epochs=60 (lstm_gvfl_e). | lstm_gvfl_e result (LSTM r7+r11, interrupted ep15): best_val ep4 val_loss=-0.206; best_gated=78 ep6 ppt=0.052 — asymmetric sell_reward 3.0x did not improve SELL vs gvfl_r9 (likely masked by wd=0.016). Needs clean re-run with wd=0.008 to isolate effect.",
                           "loss_class":  "GatedVolumeFocalLoss",
                           "gamma":  2.5,
                           "trade_classes":  [
@@ -694,5 +694,24 @@
                           "recall_floor":  0.05,
                           "rec_floor_weight":  15,
                           "eps":  1E-06
-                      }
+                      },
+    "US500_gvfl_r12":  {
+                           "_comment":  "From US500_gvfl_r9. One change: prec_target 0.43->0.46. Rationale: TCN architecture achieved prec_S=0.464-0.535 in TradeProfitabilityLoss-era runs and prec_B=0.396-0.420 in gvfl_r7 runs, ceiling higher than LSTM (max 0.420). Widening reward band from [0.33,0.43] to [0.33,0.46] keeps the reward gradient active as TCN precision climbs through the 0.43 region without the band capping out early. prec_reward_weight=1.50 unchanged — validate TCN gradient stability before increasing. All other params identical to r9 (alpha_power=0.45, vol_floor=0.065, vol_floor_weight=250, prec_floor=0.33, prec_floor_weight=25, gamma=2.5). Pair with TCN/US500_1m_r4 + label=US500_1m_dev_r3, --n-rows 3000000 --epochs 40 --patience 12.",
+                           "loss_class":  "GatedVolumeFocalLoss",
+                           "gamma":  2.5,
+                           "trade_classes":  [
+                                                 0,
+                                                 2
+                                             ],
+                           "alpha_power":  0.45,
+                           "vol_floor":  0.065,
+                           "vol_floor_weight":  250,
+                           "prec_floor":  0.33,
+                           "prec_floor_weight":  25,
+                           "prec_target":  0.46,
+                           "prec_reward_weight":  1.5,
+                           "recall_floor":  0.05,
+                           "rec_floor_weight":  15,
+                           "eps":  1E-06
+                       }
 }
