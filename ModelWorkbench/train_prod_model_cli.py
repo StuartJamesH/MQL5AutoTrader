@@ -53,7 +53,8 @@ from Learn.Loaders import SequenceDataset
 from Learn.Models import LSTMAttentionSEClassifier, TCNAttentionSEClassifier
 from Learn.Loss import TradeProfitabilityLoss, GatedVolumeFocalLoss
 
-_GATED_MIN_PRECISION = 0.38  # Minimum per-direction precision required to save best gated-PnL checkpoint.
+_GATED_MIN_PRECISION = 0.38   # Minimum per-direction precision required to save best gated-PnL checkpoint.
+_RECENCY_VAL_BARS    = 10_000  # Tail of val window used for recency_gated_pnl diagnostic (log-only, no checkpointing).
 
 # ---------------------------------------------------------------------------
 # Symbol → dataset CSV and feature function
@@ -931,7 +932,7 @@ def main(argv=None) -> None:
         "train_losses": [], "val_losses_all": [],
         "f1_sell": [], "prec_sell": [], "rec_sell": [],
         "f1_buy":  [], "prec_buy":  [], "rec_buy":  [],
-        "pnl": [], "gated_pnl": [],
+        "pnl": [], "gated_pnl": [], "recency_gated_pnl": [],
         "best_val_loss": float("inf"),
         "best_epoch": -1,
         "best_pnl": float("-inf"),
@@ -1017,6 +1018,14 @@ def main(argv=None) -> None:
                 history["best_gated_pnl_epoch"] = epoch
                 best_gated_model_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
+            # Recency diagnostic — last _RECENCY_VAL_BARS of val window (log-only, no effect on checkpointing)
+            _rec_n    = min(_RECENCY_VAL_BARS, len(eval_pack["preds"]))
+            _rec_gate = {k: v[-_rec_n:] for k, v in gate_arrays.items()}
+            r_pnl, r_ppt, r_sell, r_buy, _, _ = _compute_gated_pnl(
+                eval_pack["preds"][-_rec_n:], eval_pack["outcomes"][-_rec_n:], _rec_gate, commission,
+            )
+            history["recency_gated_pnl"].append(r_pnl)
+
             if eval_pack["val_loss"] < history["best_val_loss"]:
                 history["best_val_loss"] = eval_pack["val_loss"]
                 history["best_epoch"]    = epoch
@@ -1038,11 +1047,13 @@ def main(argv=None) -> None:
             _g_pnl_sell_str = f"{g_pnl_sell:.2f}"  if not math.isnan(g_pnl_sell) else "nan"
             _g_pnl_buy_str  = f"{g_pnl_buy:.2f}"   if not math.isnan(g_pnl_buy)  else "nan"
             _g_flat         = len(eval_pack["preds"]) - g_sell - g_buy
+            _r_pnl_str      = f"{r_pnl:.2f}"        if not math.isnan(r_pnl)      else "nan"
+            _r_ppt_str      = f"{r_ppt:.3f}"         if not math.isnan(r_ppt)      else "nan"
             logger.info(
                 "Epoch %d | train=%.4f val=%.4f gap=%+.4f lr=%.2e gnorm=%.4f | "
                 "acc=%.4f profit=%.2f (S %.2f B %.2f) | "
                 "preds=[S:%d F:%d B:%d] | gated_preds=[S:%d F:%d B:%d] | "
-                "gated_pnl=%s (S:%s B:%s ppt=%s) | "
+                "gated_pnl=%s (S:%s B:%s ppt=%s) | recent_gated_pnl=%s (ppt=%s) | "
                 "prec[S=%.3f B=%.3f] rec[S=%.3f B=%.3f] | "
                 "loss[fce=%.3f vol=%.3f pr=%.3f rec=%.3f dir=%.3f pft=%.3f]%s",
                 epoch,
@@ -1058,6 +1069,7 @@ def main(argv=None) -> None:
                 _pd[0], _pd[1], _pd[2],
                 g_sell, _g_flat, g_buy,
                 _g_pnl_str, _g_pnl_sell_str, _g_pnl_buy_str, _g_ppt_str,
+                _r_pnl_str, _r_ppt_str,
                 eval_pack["prec_sell"], eval_pack["prec_buy"],
                 eval_pack["rec_sell"],  eval_pack["rec_buy"],
                 _lc["focal_ce"], _lc.get("vol_loss", 0.0), _lc["precision_loss"], _lc["recall_loss"], _lc["confusion_loss"], _lc.get("profit_loss", 0.0),
@@ -1259,7 +1271,8 @@ def main(argv=None) -> None:
             "recall_sell":       history["rec_sell"],
             "recall_buy":        history["rec_buy"],
             "pnl":               history["pnl"],
-            "gated_pnl":         [x if not (isinstance(x, float) and math.isnan(x)) else None for x in history["gated_pnl"]],
+            "gated_pnl":          [x if not (isinstance(x, float) and math.isnan(x)) else None for x in history["gated_pnl"]],
+            "recency_gated_pnl":  [x if not (isinstance(x, float) and math.isnan(x)) else None for x in history["recency_gated_pnl"]],
             "grad_norms":        history["grad_norms"],
             "lr_curve":          history["lr_curve"],
             "pred_dist":         history["pred_dist"],
